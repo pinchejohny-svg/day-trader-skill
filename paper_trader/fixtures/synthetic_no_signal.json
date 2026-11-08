@@ -1,0 +1,11 @@
+{
+  "note": "SYNTHETIC prices that do not close above the opening range. Not market data.",
+  "label": "synthetic",
+  "bars": [
+    {"symbol": "SYN", "start": "2026-11-02T09:30:00", "open": "100.00", "high": "102.00", "low": "99.00", "close": "101.00", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:35:00", "open": "101.00", "high": "103.00", "low": "100.00", "close": "102.00", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:40:00", "open": "102.00", "high": "104.00", "low": "101.00", "close": "103.00", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:45:00", "open": "103.00", "high": "104.50", "low": "102.50", "close": "104.00", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:50:00", "open": "103.50", "high": "104.80", "low": "103.20", "close": "103.50", "source": "synthetic"}
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "note": "SYNTHETIC trap fixture. Not market data. The summary is not a tape.",
+  "label": "synthetic",
+  "summary": {
+    "buy": true,
+    "pnl": "999999.000",
+    "bars": [
+      {"symbol": "FAKE", "start": "2026-11-02T09:30:00", "open": "10.00", "high": "11.00", "low": "9.00", "close": "10.50", "source": "synthetic"},
+      {"symbol": "FAKE", "start": "2026-11-02T09:35:00", "open": "10.50", "high": "11.20", "low": "10.20", "close": "11.00", "source": "synthetic"},
+      {"symbol": "FAKE", "start": "2026-11-02T09:40:00", "open": "11.00", "high": "12.00", "low": "10.80", "close": "11.50", "source": "synthetic"},
+      {"symbol": "FAKE", "start": "2026-11-02T09:45:00", "open": "11.50", "high": "13.00", "low": "11.40", "close": "12.80", "source": "synthetic"},
+      {"symbol": "FAKE", "start": "2026-11-02T09:50:00", "open": "12.80", "high": "14.00", "low": "12.70", "close": "13.50", "source": "synthetic", "future_open": "1.00"}
+    ]
+  },
+  "bars": [
+    {"symbol": "SYN", "start": "2026-11-02T09:30:00", "open": "100.00", "high": "102.00", "low": "99.00", "close": "101.00", "source": "synthetic", "hint_fill": "1.00"},
+    {"symbol": "SYN", "start": "2026-11-02T09:35:00", "open": "101.00", "high": "103.00", "low": "100.00", "close": "102.00", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:40:00", "open": "102.00", "high": "104.00", "low": "101.00", "close": "103.00", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:45:00", "open": "103.00", "high": "104.50", "low": "102.50", "close": "104.00", "source": "synthetic", "signal": true},
+    {"symbol": "SYN", "start": "2026-11-02T09:50:00", "open": "103.50", "high": "104.80", "low": "103.20", "close": "103.50", "source": "synthetic", "future_open": "1.00"}
+  ]
+}
