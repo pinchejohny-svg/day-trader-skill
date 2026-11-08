@@ -1,18 +1,15 @@
-"""Load a local fixture file. This module does not open a socket or a URL."""
-
-import os
+"""Load a local fixture. Reads stay inside fixtures/ or demo-state/."""
 
 from paper_trader.errors import DataError
 from paper_trader.jsonutil import parse
+from paper_trader.paths import confine_existing, read_text
 
 
-def load_fixture(path):
+def load_fixture(path, root="fixtures"):
     if not isinstance(path, str) or "://" in path:
         raise DataError("a fixture is a local file path")
-    if not os.path.isfile(path):
-        raise DataError("fixture not found")
-    with open(path, "r", encoding="utf-8") as handle:
-        text = handle.read()
+    leaf = confine_existing(path, root)
+    text = read_text(leaf)
     if not text.strip():
         raise DataError("fixture is empty")
     doc = parse(text, DataError)
@@ -31,9 +28,8 @@ def load_fixture(path):
                 "a historical label is caller-supplied; the note must say NOT VERIFIED"
             )
     else:
-        raise DataError("label must be synthetic or historical; forward is disabled")
+        raise DataError("label must be synthetic or historical")
     bars = doc.get("bars")
     if not isinstance(bars, list):
         raise DataError("fixture bars must be a list")
-    # Unknown keys, including summary, are not bars and are not returned.
     return {"bars": bars, "label": label, "note": note}

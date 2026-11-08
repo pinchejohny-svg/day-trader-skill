@@ -9,8 +9,7 @@ sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import paper_trader.tests.support as support
-from paper_trader.errors import ForwardDisabled
-from paper_trader.forward import ForwardPaperAdapter
+from paper_trader.forward import BLOCKER, FORWARD_IMPLEMENTED
 
 _BANNED_MODULES = {
     "alpaca",
@@ -42,7 +41,7 @@ class StaticBoundaries(unittest.TestCase):
     def test_package_has_no_network_or_skill_imports(self):
         for dirpath, dirnames, filenames in os.walk(support.PACKAGE):
             dirnames[:] = [
-                name for name in dirnames if name not in (".tmp-tests", "tests", "__pycache__")
+                name for name in dirnames if name not in (".tmp-tests", "demo-state", "__pycache__")
             ]
             for name in filenames:
                 if not name.endswith(".py"):
@@ -55,18 +54,28 @@ class StaticBoundaries(unittest.TestCase):
                 if os.path.basename(path) != "persist.py":
                     self.assertNotIn("threading", modules, path)
                     self.assertNotIn("fcntl", modules, path)
+                in_tests = os.sep + "tests" + os.sep in path
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Attribute) and node.attr in ("now", "urlopen", "urlretrieve"):
                         self.fail("%s calls .%s" % (path, node.attr))
-                    if isinstance(node, ast.Name) and node.id in ("urlopen", "sleep"):
+                    if isinstance(node, ast.Name) and node.id in ("urlopen", "sleep", "eval", "exec"):
                         self.fail("%s references %s" % (path, node.id))
+                    if not in_tests and isinstance(node, ast.Attribute) and node.attr == "environ":
+                        self.fail("%s reads the environment" % path)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in (
+                        "eval",
+                        "exec",
+                        "compile",
+                        "__import__",
+                    ):
+                        self.fail("%s calls %s" % (path, node.func.id))
 
-    def test_forward_adapter_does_not_poll(self):
-        adapter = ForwardPaperAdapter()
-        with self.assertRaises(ForwardDisabled):
-            adapter.poll()
-        with self.assertRaises(ForwardDisabled):
-            adapter.stream()
+    def test_forward_module_has_no_callable_feed(self):
+        self.assertFalse(FORWARD_IMPLEMENTED)
+        self.assertIn("no broker pathway", BLOCKER)
+        source = open(os.path.join(support.PACKAGE, "forward.py"), "r", encoding="utf-8").read()
+        tree = ast.parse(source)
+        self.assertFalse(any(isinstance(node, (ast.FunctionDef, ast.ClassDef)) for node in ast.walk(tree)))
 
     def test_bytecode_flag_is_on(self):
         self.assertTrue(sys_dont_write())

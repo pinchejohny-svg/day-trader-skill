@@ -246,7 +246,7 @@ def _fold(inputs, approval):
                 _note_late_position(state, symbol, decision)
 
         accepted_by = {bar["symbol"]: bar for bar in accepted}
-        _expire_missed(state, pending, start, accepted_by, rejected)
+        _pause_unresolved(state, pending, start, accepted_by, rejected)
         _open_exits(state, accepted_by)
         _entries(state, pending, fired, accepted_by, start)
         _intrabar_exits(state, accepted_by)
@@ -475,23 +475,25 @@ def _event(state, event):
     state["events"].append(event)
 
 
-def _expire_missed(state, pending, start, accepted_by, rejected):
+def _pause_unresolved(state, pending, start, accepted_by, rejected):
+    """Withhold a fill when the next bar is missing or stale. Never an exit."""
     if not isinstance(start, str):
         for symbol, signal in list(pending.items()):
-            _expire(state, pending, signal, "missed_fill_bar")
+            _pause(state, pending, signal, "missing_bar")
         return
     for symbol, signal in list(pending.items()):
         if signal["fill_start"] < start:
-            _expire(state, pending, signal, "missed_fill_bar")
+            _pause(state, pending, signal, "missing_bar")
         elif signal["fill_start"] == start and symbol not in accepted_by:
             reason = {
-                "late_bar": "late_fill_bar",
+                "late_bar": "stale_bar",
                 "not_closed": "not_closed",
-            }.get(rejected.get(symbol), "missed_fill_bar")
-            _expire(state, pending, signal, reason)
+                "gapped": "missing_bar",
+            }.get(rejected.get(symbol), "missing_bar")
+            _pause(state, pending, signal, reason)
 
 
-def _expire(state, pending, signal, reason):
+def _pause(state, pending, signal, reason):
     _event(
         state,
         {
@@ -499,12 +501,13 @@ def _expire(state, pending, signal, reason):
             "bar_start": signal["signal_start"],
             "decision_time": signal["signal_end"],
             "event_time": signal["signal_end"],
-            "id": "expire:%s:%s:%s" % (signal["symbol"], signal["signal_start"], reason),
+            "fill": "paused",
+            "id": "pause:%s:%s:%s" % (signal["symbol"], signal["signal_start"], reason),
             "observed_at": signal["signal_end"],
             "reason": reason,
             "session_date": signal["session_date"],
             "symbol": signal["symbol"],
-            "type": "expire",
+            "type": "pause",
         },
     )
     pending.pop(signal["symbol"], None)
@@ -976,8 +979,8 @@ def _freeze(state):
         "assumptions": ASSUMPTIONS,
         "cash": s3(state["cash"]),
         "coverage": coverage,
+        "architecture": "simulation",
         "events": list(state["events"]),
-        "forward_enabled": False,
         "inputs": state["inputs"],
         "label": state["approval"]["label"],
         "max_drawdown": s3(state["max_drawdown"]),

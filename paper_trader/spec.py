@@ -12,7 +12,13 @@ from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
 from paper_trader.errors import ApprovalRequired, RunBoundExceeded
 
 STRATEGY_ID = "orb15-5m-long-next-open-v1"
-ACK = "simulated_offline_not_a_broker_fill"
+ACK = "simulated_offline_replay_only"
+PROVENANCE = (
+    "Reimplemented from trader-scanner/scan.py orb_hit (close above the "
+    "opening-range high), trader-entry/entry.py evaluate (strict close, "
+    "closed bars only), and trader-exit/exit.py compute (midpoint stop "
+    "floored to the cent, 2R target half-up). Those modules are not imported."
+)
 FMT = "%Y-%m-%dT%H:%M:%S"
 STAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 SYMBOL_RE = re.compile(r"[A-Z][A-Z0-9.]{0,9}")
@@ -42,6 +48,7 @@ ASSUMPTIONS = {
     "min_risk_pct_of_entry": "0.05",
     "no_entries_after": "15:30",
     "opening_range": "15min_three_closed_5min_bars",
+    "provenance": PROVENANCE,
     "ranking": "higher_signal_close_pct_over_range_high_then_symbol_ascending",
     "risk_pct_of_ledger_equity": "0.005",
     "run_realized_loss_stop": "300.000",

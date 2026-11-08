@@ -3,7 +3,6 @@
 import io
 import json
 import os
-import subprocess
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -15,6 +14,7 @@ import paper_trader.tests.support as support
 from paper_trader.engine import run_bars
 from paper_trader.errors import (
     ConcurrentRunRefused,
+    PathRefused,
     ReplayConflict,
     StateCorrupt,
     StateExists,
@@ -133,39 +133,33 @@ class Persistence(unittest.TestCase):
                 with StateStore(path):
                     self.fail("second writer entered")
 
-    def test_second_process_is_refused(self):
-        directory = support.workdir("lock-process")
-        path = os.path.join(directory, "state.json")
-        code = (
-            "import os, sys\n"
-            "os.environ['PYTHONDONTWRITEBYTECODE'] = '1'\n"
-            "sys.dont_write_bytecode = True\n"
-            "sys.path.insert(0, %r)\n"
-            "from paper_trader.errors import ConcurrentRunRefused\n"
-            "from paper_trader.persist import StateStore\n"
-            "try:\n"
-            "    with StateStore(%r):\n"
-            "        raise SystemExit(2)\n"
-            "except ConcurrentRunRefused:\n"
-            "    raise SystemExit(0)\n"
-        ) % (support.REPO, path)
-        env = dict(os.environ)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        with StateStore(path) as _store:
-            proc = subprocess.run(
-                [sys.executable, "-B", "-c", code],
-                env=env,
-                cwd=support.REPO,
-                capture_output=True,
-                text=True,
-            )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+    def test_traversal_and_symlink_are_refused(self):
+        from paper_trader.paths import demo_dir
+
+        demo = demo_dir()
+        with self.assertRaises(PathRefused):
+            StateStore(os.path.join(demo, "..", "README.md"))
+        with self.assertRaises(PathRefused):
+            load_fixture(os.path.join(support.FIXTURES, "..", "README.md"))
+        link = os.path.join(demo, "escape.json")
+        if os.path.islink(link):
+            os.unlink(link)
+        os.symlink(os.path.join(support.PACKAGE, "README.md"), link)
+        try:
+            with self.assertRaises(PathRefused):
+                StateStore(link)
+        finally:
+            if os.path.islink(link):
+                os.unlink(link)
 
     def test_cli_writes_only_the_requested_state(self):
         from paper_trader.__main__ import run
+        from paper_trader.paths import demo_dir, kind
 
-        directory = support.workdir("cli")
-        path = os.path.join(directory, "state.json")
+        name = "cli-round-trip.json"
+        path = os.path.join(demo_dir(), name)
+        if kind(path) == "file":
+            os.unlink(path)
         before = _outside_files()
         out = io.StringIO()
         err = io.StringIO()
@@ -174,7 +168,7 @@ class Persistence(unittest.TestCase):
             "--fixture",
             support.fixture("synthetic_round_trip.json"),
             "--state",
-            path,
+            name,
             "--label",
             "synthetic",
             "--sessions",
@@ -190,8 +184,9 @@ class Persistence(unittest.TestCase):
         self.assertEqual(code, 0, err.getvalue())
         report = json.loads(out.getvalue())
         self.assertEqual(report["cash"], "10096.200")
+        self.assertEqual(report["architecture"], "simulation")
         self.assertFalse(report["profitability_claim"])
-        self.assertTrue(os.path.commonpath([os.path.abspath(path), support.PACKAGE]) == os.path.abspath(support.PACKAGE))
+        self.assertTrue(os.path.commonpath([os.path.abspath(path), os.path.abspath(demo_dir())]) == os.path.abspath(demo_dir()))
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             self.assertEqual(run(argv), 3)
         argv[0] = "--resume"
@@ -200,7 +195,7 @@ class Persistence(unittest.TestCase):
         refused = [arg for arg in argv if arg != "--acknowledge-simulated"]
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             self.assertEqual(run(refused), 2)
-        self.assertFalse(os.path.exists(os.path.join(directory, "nope.json")))
+        self.assertFalse(os.path.exists(os.path.join(demo_dir(), "nope.json")))
         self.assertEqual(_outside_files(), before)
         saved = parse(open(path, "r", encoding="utf-8").read(), ValueError)
         self.assertEqual(build_report(saved)["cash"], "10096.200")

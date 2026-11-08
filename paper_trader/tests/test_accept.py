@@ -56,7 +56,7 @@ class ReplayAcceptance(unittest.TestCase):
         self.assertEqual(report["drawdown"], "0.000")
         self.assertFalse(report["full_session"])
         self.assertFalse(report["profitability_claim"])
-        self.assertFalse(report["broker_fills"])
+        self.assertEqual(report["architecture"], "simulation")
         self.assertFalse(report["data_verified"])
         self.assertEqual(report["label"], "synthetic")
         self.assertIn("flat_by_not_reached", report["incomplete_reasons"])
@@ -263,9 +263,11 @@ class ReplayAcceptance(unittest.TestCase):
             bars.append(copied)
         doc = run_bars(bars, support.approval(["SYN"], ["2026-11-02"]))
         self.assertEqual(support.of_type(doc, "entry"), [])
+        self.assertEqual(support.of_type(doc, "exit"), [])
         self.assertEqual(doc["positions"], {})
-        expired = support.of_type(doc, "expire")
-        self.assertEqual(expired[0]["reason"], "late_fill_bar")
+        paused = support.of_type(doc, "pause")
+        self.assertEqual(paused[0]["reason"], "stale_bar")
+        self.assertEqual(paused[0]["fill"], "paused")
 
     def test_late_bar_does_not_manufacture_an_exit(self):
         loaded = load_fixture(support.fixture("synthetic_morning_incomplete.json"))
@@ -302,7 +304,8 @@ class ReplayAcceptance(unittest.TestCase):
             bars.append(copied)
         doc = run_bars(bars, support.approval(["SYN"], ["2026-11-02"]))
         self.assertEqual(support.of_type(doc, "entry"), [])
-        self.assertEqual(support.of_type(doc, "expire")[0]["reason"], "not_closed")
+        self.assertEqual(support.of_type(doc, "exit"), [])
+        self.assertEqual(support.of_type(doc, "pause")[0]["reason"], "not_closed")
 
     def test_conflicting_duplicate_does_not_use_the_second_close(self):
         loaded = load_fixture(support.fixture("synthetic_round_trip.json"))
@@ -363,7 +366,7 @@ class ReplayAcceptance(unittest.TestCase):
                 '{"note":"NOT VERIFIED invented prices labeled historical. Not market data.",'
                 '"label":"historical","bars":[]}\n'
             )
-        loaded = load_fixture(path)
+        loaded = load_fixture(path, root="demo-state")
         doc = run_bars(loaded["bars"], support.approval(["NODATA"], ["2026-11-02"], "historical"))
         report = build_report(doc)
         self.assertEqual(report["label"], "historical")

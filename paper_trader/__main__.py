@@ -13,6 +13,7 @@ from paper_trader.errors import (
     ConcurrentRunRefused,
     DataError,
     PaperTraderError,
+    PathRefused,
     ReplayConflict,
     RunBoundExceeded,
     ScopeError,
@@ -22,6 +23,7 @@ from paper_trader.errors import (
 )
 from paper_trader.feed import load_fixture
 from paper_trader.jsonutil import pretty
+from paper_trader.paths import state_path
 from paper_trader.persist import StateStore
 from paper_trader.report import build_report
 from paper_trader.spec import ACK, STRATEGY_ID
@@ -30,13 +32,13 @@ from paper_trader.spec import ACK, STRATEGY_ID
 def run(argv):
     parser = argparse.ArgumentParser(
         prog="paper_trader",
-        description="Bounded offline simulated ledger. Not a broker connection.",
+        description="Bounded offline simulation. State files stay inside paper_trader/demo-state.",
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--new", action="store_true")
     mode.add_argument("--resume", action="store_true")
     parser.add_argument("--fixture", required=True)
-    parser.add_argument("--state", required=True)
+    parser.add_argument("--state", required=True, help="File name inside paper_trader/demo-state")
     parser.add_argument("--label", required=True, choices=("synthetic", "historical"))
     parser.add_argument("--sessions", required=True, help="Comma-separated YYYY-MM-DD")
     parser.add_argument("--symbols", required=True, help="Comma-separated symbols")
@@ -49,7 +51,10 @@ def run(argv):
         )
         return 2
     try:
-        fixture = load_fixture(args.fixture)
+        if "/" in args.state or "\\" in args.state:
+            raise PathRefused("--state must be a file name inside paper_trader/demo-state")
+        state_file = state_path(args.state)
+        fixture = load_fixture(args.fixture, root="fixtures")
         if fixture["label"] != args.label:
             raise ScopeError("fixture label does not match --label")
         approval = {
@@ -60,7 +65,7 @@ def run(argv):
             "strategy_id": STRATEGY_ID,
             "symbols": [item.strip() for item in args.symbols.split(",") if item.strip()],
         }
-        with StateStore(args.state) as store:
+        with StateStore(state_file) as store:
             if args.new:
                 frozen = store.create(fixture["bars"], approval)
             else:
@@ -73,6 +78,7 @@ def run(argv):
     except (
         ConcurrentRunRefused,
         DataError,
+        PathRefused,
         ReplayConflict,
         RunBoundExceeded,
         ScopeError,

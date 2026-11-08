@@ -1,8 +1,8 @@
-"""Errors for the offline paper trader. None of these place an order."""
+"""Errors for the offline simulation. This package has no order pathway."""
 
 
 class PaperTraderError(Exception):
-    """Base error. Callers should not treat this as a broker rejection."""
+    """Base error for a refused simulation run."""
 
 
 class ApprovalRequired(PaperTraderError):
@@ -45,5 +45,5 @@ class EngineInvariant(PaperTraderError):
     """Internal accounting broke. The ledger must not be saved."""
 
 
-class ForwardDisabled(PaperTraderError):
-    """Forward paper mode has no verified data contract and does no I/O."""
+class PathRefused(PaperTraderError):
+    """The path leaves the demo directory, traverses, or uses a symlink."""

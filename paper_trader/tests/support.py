@@ -6,11 +6,10 @@ Run the suite only after review, from the repo root:
 
 That command was not run while these tests were written. -B and
 PYTHONDONTWRITEBYTECODE keep .pyc files out of this package and the skill
-folders. Temp files stay under paper_trader/.tmp-tests.
+folders. Temp ledgers stay under paper_trader/demo-state.
 """
 
 import os
-import shutil
 import sys
 
 sys.dont_write_bytecode = True
@@ -19,19 +18,27 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 PACKAGE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.path.dirname(PACKAGE)
 FIXTURES = os.path.join(PACKAGE, "fixtures")
-TMP = os.path.join(PACKAGE, ".tmp-tests")
 
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
 
 def workdir(name):
-    path = os.path.join(TMP, name)
-    if os.path.exists(path):
-        shutil.rmtree(path)
-    os.makedirs(path)
+    from paper_trader.paths import demo_dir, demo_subdir
+
+    path = demo_subdir(name)
+    root = demo_dir()
+    if os.path.islink(path):
+        raise RuntimeError("refusing to use a symlink as a test directory")
+    for entry in os.listdir(path):
+        leaf = os.path.join(path, entry)
+        if os.path.islink(leaf) or os.path.isfile(leaf):
+            os.unlink(leaf)
     absolute = os.path.abspath(path)
     package = os.path.abspath(PACKAGE)
+    demo = os.path.abspath(root)
+    if os.path.commonpath([absolute, demo]) != demo:
+        raise RuntimeError("test directory escaped demo-state: %s" % absolute)
     if os.path.commonpath([absolute, package]) != package:
         raise RuntimeError("test directory escaped paper_trader: %s" % absolute)
     return absolute

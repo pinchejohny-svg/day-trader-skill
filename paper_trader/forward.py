@@ -1,27 +1,11 @@
-"""Forward paper mode is disabled.
+"""Forward operation is not implemented.
 
-A later adapter would have to supply a verified contract that this package
-does not implement and does not check against a live service:
-
-- completed 5-minute bars only, never a partial bar
-- an observation timestamp that is not implied by a download clock
-- no revision of a bar the engine has already accepted
-- a source name and a freshness bound the human has approved
-- the same scope record the offline engine already requires
-
-This class performs no I/O. It is not a paper-trading connection.
+There is no feed object, no poll method, and no broker pathway. This module
+does not perform I/O. A verified closed-bar contract is not part of this demo.
 """
 
-from paper_trader.errors import ForwardDisabled
-
-
-class ForwardPaperAdapter(object):
-    def poll(self, *args, **kwargs):
-        raise ForwardDisabled(
-            "forward paper mode is disabled: no verified closed-bar data contract is implemented"
-        )
-
-    def stream(self, *args, **kwargs):
-        raise ForwardDisabled(
-            "forward paper mode is disabled: no verified closed-bar data contract is implemented"
-        )
+FORWARD_IMPLEMENTED = False
+BLOCKER = (
+    "forward mode is not implemented: no feed, no broker pathway, and no I/O. "
+    "Provenance for the offline rule is paper_trader.spec.PROVENANCE."
+)

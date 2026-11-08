@@ -4,8 +4,12 @@ Simulated long-only accounting for one human-approved scope. A higher cash
 balance on a synthetic fixture is arithmetic on invented bars. It is not a
 market result, a broker fill, or evidence that the rule makes money.
 
-Forward paper trading is disabled. This package does not download data, open
-a socket, import the day-trader skills, or place an order.
+This package does not download data, open a socket, spawn a process, read
+credentials, or import the day-trader skills. There is no broker object and
+no paper-trading flag. `forward.py` has no callable feed. State files can be
+written only under `paper_trader/demo-state`. A `..` path or a symlink is
+refused. `--new` does not overwrite. A missing or stale bar pauses the fill
+and leaves an open position unresolved; it does not book an exit.
 
 ## What is reused
 
@@ -73,11 +77,11 @@ after the stored watermark.
 
 A bar is closed when `observed_at` is omitted (treated as the bar end) or
 falls in `[end, end + 5 minutes]`. Earlier than the end means the bar is not
-closed and cannot fill or exit. Later than end + 5 minutes is late: it does
-not fill, does not exit, and blocks that symbol. A missing slot, a bad
-price, or two different bars with the same start also block the symbol.
-After a block, later bars for that symbol are ignored. An open position is
-kept, marked stale, and is not given a made-up exit.
+closed. Later than end + 5 minutes is stale. A stale, unclosed, or missing
+bar writes a `pause` event, does not fill, and does not book an exit. The
+position, if one is already open, stays open and is marked stale. A bad
+price or two different bars with the same start block that symbol the same
+way. Later bars for that symbol are ignored.
 
 The signal is recorded when the signal bar is accepted. The fill, if any,
 is the next bar's open plus one cent. The fill bar's high, low, and close
@@ -128,13 +132,16 @@ applied: each later name in the batch sees a smaller `shares_cash`.
 
 ## State
 
-`StateStore` is the only writer. `fcntl.flock` is non-blocking, and a second
-store in the same process is refused. The lock is not stolen. A crash drops
-the flock. Writes go to a temp file in the state file's own directory, then
-`os.replace`. A truncated, empty, duplicate-key, or internally inconsistent
-file raises `StateCorrupt` and is not replaced with a fresh $10,000 ledger.
-Create refuses to overwrite an existing file. Resume requires the same
-approval and the same prefix; an earlier suffix is a `ReplayConflict`.
+`StateStore` writes only under `paper_trader/demo-state`. `..`, a symlink,
+and a path outside that directory are refused before open or replace.
+`fcntl.flock` is non-blocking, and a second store in the same process is
+refused. The lock is not stolen. A crash drops the flock. Writes go to a
+temp file in that same directory, then `os.replace`. `--new` does not
+replace an existing file. Resume replaces only that same regular file. A
+truncated, empty, duplicate-key, or internally inconsistent file raises
+`StateCorrupt` and is not replaced with a fresh $10,000 ledger. Resume
+requires the same approval and the same prefix; an earlier suffix is a
+`ReplayConflict`.
 
 The file stores the inputs and a fingerprint of a full replay. A hand edit
 that does not replay to the same cash, events, and positions fails closed.
@@ -147,8 +154,8 @@ The engine does not read the system clock. Event time is the bar's
 ## Reports
 
 `label` is `synthetic` or `historical` as supplied by the caller.
-`data_verified` is always false. `forward_enabled` is always false.
-`profitability_claim` is always false. `broker_fills` is always false.
+`data_verified` is always false. `architecture` is `simulation`.
+`profitability_claim` is always false. There is no broker flag to flip.
 Realized pnl, unrealized pnl, equity, drawdown, and open positions are
 reported separately. Unrealized pnl uses the last accepted close and is
 omitted when any open position is stale, carried, or unpriced. A session is
@@ -165,7 +172,7 @@ once. Individual simulated fills are not approved one by one.
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m paper_trader \
   --new \
   --fixture paper_trader/fixtures/synthetic_round_trip.json \
-  --state paper_trader/runs/synthetic-round-trip.json \
+  --state synthetic-round-trip.json \
   --label synthetic \
   --sessions 2026-11-02 \
   --symbols SYN \
@@ -173,8 +180,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B -m paper_trader \
   --acknowledge-simulated
 ```
 
-`--resume` repeats that command shape against an existing state file. Keep
-`--state` under `paper_trader/`. The command prints a report and exits.
+`--state` is a file name only. The ledger is created at
+`paper_trader/demo-state/<name>`. `--resume` updates that same regular file.
+The command prints a report and exits.
 
 After a reviewer has read the diff, the bounded test command is:
 
@@ -183,9 +191,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s paper_trader/tests 
 ```
 
 Run that from the repository root. `-B` and `PYTHONDONTWRITEBYTECODE` keep
-bytecode out of this package and the skill folders. Tests write only under
-`paper_trader/.tmp-tests`. Do not point discovery at the repository `tests/`
-directory; that runs the skill suite.
+bytecode out of this package and the skill folders. Tests write ledgers only
+under `paper_trader/demo-state`. Do not point discovery at the repository
+`tests/` directory; that runs the skill suite. The suite does not spawn a
+process.
 
 These commands were not executed while this package was written. No syntax
 check, import, formatter, or unit test was run. `TESTS NOT RUN`.
