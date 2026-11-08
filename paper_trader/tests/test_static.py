@@ -26,7 +26,8 @@ _BANNED_MODULES = {
 
 
 def _modules(path):
-    tree = ast.parse(open(path, "r", encoding="utf-8").read(), filename=path)
+    with open(path, "r", encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=path)
     found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -51,9 +52,12 @@ class StaticBoundaries(unittest.TestCase):
                 for module in modules:
                     self.assertNotIn(module, _BANNED_MODULES, path)
                     self.assertFalse(module.startswith("trader"), path)
-                if os.path.basename(path) != "persist.py":
+                base = os.path.basename(path)
+                if base not in ("persist.py", "test_persist.py"):
                     self.assertNotIn("threading", modules, path)
+                if base != "persist.py":
                     self.assertNotIn("fcntl", modules, path)
+                    self.assertNotIn("msvcrt", modules, path)
                 in_tests = os.sep + "tests" + os.sep in path
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Attribute) and node.attr in ("now", "urlopen", "urlretrieve"):
@@ -70,10 +74,24 @@ class StaticBoundaries(unittest.TestCase):
                     ):
                         self.fail("%s calls %s" % (path, node.func.id))
 
+    def test_platform_locks_are_imported_only_while_locking(self):
+        path = os.path.join(support.PACKAGE, "persist.py")
+        with open(path, "r", encoding="utf-8") as handle:
+            tree = ast.parse(handle.read(), filename=path)
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                names = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module.split(".")[0]]
+            else:
+                continue
+            self.assertFalse(set(names) & {"fcntl", "msvcrt"}, path)
+
     def test_forward_module_has_no_callable_feed(self):
         self.assertFalse(FORWARD_IMPLEMENTED)
         self.assertIn("no broker pathway", BLOCKER)
-        source = open(os.path.join(support.PACKAGE, "forward.py"), "r", encoding="utf-8").read()
+        with open(os.path.join(support.PACKAGE, "forward.py"), "r", encoding="utf-8") as handle:
+            source = handle.read()
         tree = ast.parse(source)
         self.assertFalse(any(isinstance(node, (ast.FunctionDef, ast.ClassDef)) for node in ast.walk(tree)))
 

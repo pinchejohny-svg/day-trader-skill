@@ -1,14 +1,22 @@
 """Single-writer ledger inside paper_trader/demo-state.
 
-fcntl.flock plus an in-process set. A second writer is refused. The lock is
-not stolen. Writes use a temp file in that same directory, then os.replace.
-A symlink, a path outside demo-state, or a corrupt file fails closed.
---new never replaces an existing file. Resume replaces only the same regular
-file it just loaded.
+The lock is an in-process set plus one OS lock on the first byte of the
+lock file. POSIX uses `fcntl.flock` with `LOCK_EX | LOCK_NB`, imported only
+when taking the lock. Windows uses `msvcrt.locking` with `LK_NBLCK` for one
+byte and `LK_UNLCK` to release, which is the stdlib non-blocking lock. A
+second writer is refused. The lock is not stolen.
+
+Writes use a temp file in that same directory, `os.fsync` (`_commit` on
+Windows), then `os.replace`. POSIX also fsyncs the directory. Windows has no
+stdlib directory fsync, so the replaced file is opened and fsynced again.
+That commits file bytes, not the directory entry. A reparse point, a hard
+link, a path outside demo-state, or a corrupt file fails closed. `--new`
+never replaces an existing file. Resume replaces only the same regular file
+it just loaded.
 """
 
-import fcntl
 import os
+import sys
 import tempfile
 import threading
 
@@ -23,11 +31,39 @@ from paper_trader.errors import (
     StateMissing,
 )
 from paper_trader.jsonutil import parse, pretty
-from paper_trader.paths import demo_dir, kind, read_text, state_path
+from paper_trader.paths import demo_dir, kind, read_text, state_path, windows_lexical_hazard
 from paper_trader.spec import ASSUMPTIONS, normalize_approval
 
 _GUARD = threading.Lock()
 _HELD = set()
+_UNSAFE = ("symlink", "reparse", "hardlink")
+
+
+def _lock_fd(fd):
+    """Non-blocking exclusive lock. Imports the platform module only here."""
+    if sys.platform == "win32":
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        return
+    import fcntl
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_fd(fd):
+    if sys.platform == "win32":
+        import msvcrt
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        return
+    import fcntl
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
 
 
 def package(frozen):
@@ -44,6 +80,9 @@ class StateStore(object):
         self._locked = False
 
     def __enter__(self):
+        seen = kind(self.path)
+        if seen in _UNSAFE:
+            raise PathRefused("state path is a %s" % seen)
         directory = os.path.dirname(self.path)
         if kind(directory) != "dir":
             raise PathRefused("state directory is not a real directory")
@@ -55,16 +94,16 @@ class StateStore(object):
             _HELD.add(self.path)
             self._held = True
         lock_path = self.path + ".lock"
-        if kind(lock_path) == "symlink":
+        if kind(lock_path) in _UNSAFE:
             self._release()
-            raise PathRefused("lock path is a symlink")
+            raise PathRefused("lock path is not a regular file")
         flags = os.O_RDWR | os.O_CREAT
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         try:
             fd = os.open(lock_path, flags, 0o600)
             self._fh = os.fdopen(fd, "a+", encoding="utf-8")
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_fd(self._fh.fileno())
         except PathRefused:
             self._release()
             raise
@@ -87,7 +126,7 @@ class StateStore(object):
         self._locked = False
         if self._fh is not None:
             try:
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+                _unlock_fd(self._fh.fileno())
             except OSError:
                 pass
             try:
@@ -107,8 +146,8 @@ class StateStore(object):
     def create(self, inputs, approval):
         self._require_lock()
         seen = kind(self.path)
-        if seen == "symlink":
-            raise PathRefused("refusing to replace a symlink")
+        if seen in _UNSAFE:
+            raise PathRefused("refusing to replace a %s" % seen)
         if seen is not None:
             raise StateExists("state file already exists; resume it or choose a new name")
         packed = package(run_bars(inputs, approval))
@@ -144,8 +183,8 @@ class StateStore(object):
     def load(self):
         self._require_lock()
         seen = kind(self.path)
-        if seen == "symlink":
-            raise PathRefused("refusing to read a symlink")
+        if seen in _UNSAFE:
+            raise PathRefused("refusing to read a %s" % seen)
         if seen is None:
             raise StateMissing("no state file at %s" % self.path)
         if seen != "file":
@@ -185,20 +224,51 @@ def _is_relative_name(path):
 
 
 def _absolute_state(path):
-    if not isinstance(path, str) or "\x00" in path or ".." in path.split("/") or ".." in path.split(os.sep):
+    if not isinstance(path, str) or "\x00" in path or ".." in path.split("/") or ".." in path.split("\\"):
         raise PathRefused("path traversal is refused")
+    hazard = windows_lexical_hazard(path)
+    if hazard is not None:
+        raise PathRefused(hazard)
     demo = os.path.abspath(demo_dir())
     absolute = os.path.abspath(path)
-    if os.path.commonpath([demo, absolute]) != demo or absolute == demo:
+    root_n = os.path.normcase(demo)
+    leaf_n = os.path.normcase(absolute)
+    try:
+        contained = os.path.commonpath([root_n, leaf_n]) == root_n and leaf_n != root_n
+    except ValueError:
+        contained = False
+    if not contained:
         raise PathRefused("state file must stay inside demo-state")
     relative = os.path.relpath(absolute, demo)
-    return state_path(relative.replace(os.sep, "/"))
+    return state_path(relative.replace("\\", "/"))
+
+
+def _sync_after_replace(directory, path):
+    """Commit the new file. Directory fsync exists only on POSIX.
+
+    Windows `os.fsync` is the C `_commit` of a file descriptor. There is no
+    stdlib call that fsyncs a directory there, so this opens the replaced
+    file and fsyncs that. A crash can still lose the directory entry even
+    though the file bytes were committed.
+    """
+    if sys.platform == "win32":
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return
+    dirfd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
 
 
 def _atomic_write(path, text, replace_existing):
     seen = kind(path)
-    if seen == "symlink":
-        raise PathRefused("refusing to replace a symlink")
+    if seen in _UNSAFE:
+        raise PathRefused("refusing to replace a %s" % seen)
     if seen not in (None, "file"):
         raise PathRefused("state path is not a regular file")
     if seen == "file" and not replace_existing:
@@ -209,22 +279,21 @@ def _atomic_write(path, text, replace_existing):
     if kind(directory) != "dir":
         raise PathRefused("state directory is not a real directory")
     fd, tmp = tempfile.mkstemp(prefix=".state-", suffix=".tmp", dir=directory)
+    replaced = False
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        if kind(path) == "symlink":
-            raise PathRefused("refusing to replace a symlink")
+        if kind(path) in _UNSAFE:
+            raise PathRefused("refusing to replace a reparse point or hard link")
         os.replace(tmp, path)
-        dirfd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(dirfd)
-        finally:
-            os.close(dirfd)
+        replaced = True
+        _sync_after_replace(directory, path)
     except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        if not replaced:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         raise

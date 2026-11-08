@@ -151,6 +151,50 @@ real replay; there is no signature.
 The engine does not read the system clock. Event time is the bar's
 `observed_at`. `decision_time` for an entry is the signal bar's end.
 
+## Windows
+
+The accounting rules are the same on every platform. Durability and path
+checks are not.
+
+- Locking: POSIX `fcntl.flock(fd, LOCK_EX | LOCK_NB)`. Windows
+  `msvcrt.locking(fd, LK_NBLCK, 1)` from the start of the lock file, released
+  with `LK_UNLCK`. Neither module is imported until a lock is taken, so
+  importing the package does not require `fcntl` on Windows.
+- Replace: `os.replace` in the same directory after `os.fsync` of the temp
+  file. POSIX then fsyncs the directory. Windows `os.fsync` is `_commit` on a
+  file; the stdlib has no directory fsync, so the replaced file is fsynced
+  again. That does not commit the directory entry. A crash can still lose
+  the name even when the bytes were committed.
+- Reparse points: `os.path.islink`, `os.path.isjunction` (POSIX returns
+  false), and `st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT` when that
+  Windows stat field exists. Junctions use reparse tag
+  `IO_REPARSE_TAG_MOUNT_POINT`, which `os.path.isjunction` reads.
+- `os.O_NOFOLLOW` is used only when the interpreter defines it. It is not a
+  documented Windows `os` flag. A reparse point created after the `lstat`
+  and before `open` can still be followed on Windows.
+- Lexical refusal, via `ntpath.splitroot`, covers UNC paths, `\\?\` and
+  `\\.\` paths, drive-relative paths (`C:name`), alternate data streams
+  (`name:stream`), reserved device names (`NUL`, `CON`, `COM1` through
+  `COM9`, `LPT1` through `LPT9`, including an extension), and trailing dots
+  or spaces. A file with `st_nlink > 1` is refused.
+- Hard-link and in-process lock tests are in the suite. A second Windows
+  handle is checked with `LK_NBLCK` only on `win32`, because POSIX `flock`
+  is per process and a second descriptor in this process does not fail.
+  Another process is not spawned.
+
+Target check, not run from this revision, on native Windows PowerShell with
+Python 3.12.10, from the repo root, after review. Do not use WSL.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = "1"
+$env:PYTHONNOUSERSITE = "1"
+python -B -m unittest discover -s paper_trader/tests -t . -v
+python -B -m paper_trader --new --fixture paper_trader/fixtures/synthetic_round_trip.json --state synthetic-round-trip.json --label synthetic --sessions 2026-11-02 --symbols SYN --approve orb15-5m-long-next-open-v1 --acknowledge-simulated
+```
+
+The Linux result for `c9f23cc30bec4cbbb957caaa551d354f38dcde79` does not
+cover this Windows code. `forward.py` is still only the unimplemented marker.
+
 ## Reports
 
 `label` is `synthetic` or `historical` as supplied by the caller.

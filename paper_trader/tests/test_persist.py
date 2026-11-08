@@ -4,6 +4,7 @@ import io
 import json
 import os
 import sys
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
@@ -21,7 +22,7 @@ from paper_trader.errors import (
 )
 from paper_trader.feed import load_fixture
 from paper_trader.jsonutil import parse
-from paper_trader.persist import StateStore, package
+from paper_trader.persist import StateStore, _lock_fd, _unlock_fd, package
 from paper_trader.report import build_report
 from paper_trader.spec import STRATEGY_ID
 
@@ -56,12 +57,12 @@ class Persistence(unittest.TestCase):
         bars = _bars()
         with StateStore(path) as store:
             store.create(bars, _approval())
-        before = open(path, "r", encoding="utf-8").read()
+        before = _read(path)
         extra = support.bar("SYN", "2026-11-02T09:30:00", "100.00", "102.00", "99.00", "101.00")
         with StateStore(path) as store:
             with self.assertRaises(ReplayConflict):
                 store.resume(bars + [extra], _approval())
-        self.assertEqual(open(path, "r", encoding="utf-8").read(), before)
+        self.assertEqual(_read(path), before)
 
     def test_truncated_and_empty_files_fail_closed(self):
         directory = support.workdir("truncated")
@@ -72,18 +73,18 @@ class Persistence(unittest.TestCase):
             with StateStore(path) as store:
                 with self.assertRaises(StateCorrupt):
                     store.load()
-            self.assertEqual(open(path, "r", encoding="utf-8").read(), text)
+            self.assertEqual(_read(path), text)
             with StateStore(path) as store:
                 with self.assertRaises(StateExists):
                     store.create(_bars(), _approval())
-            self.assertEqual(open(path, "r", encoding="utf-8").read(), text)
+            self.assertEqual(_read(path), text)
 
     def test_edited_cash_and_assumptions_fail_closed(self):
         directory = support.workdir("edited")
         path = os.path.join(directory, "state.json")
         with StateStore(path) as store:
             store.create([], support.approval(["NODATA"], ["2026-11-02"]))
-        original = open(path, "r", encoding="utf-8").read()
+        original = _read(path)
         edited = original.replace('"cash": "10000.000"', '"cash": "1.000"', 1)
         self.assertNotEqual(edited, original)
         with open(path, "w", encoding="utf-8") as handle:
@@ -91,7 +92,7 @@ class Persistence(unittest.TestCase):
         with StateStore(path) as store:
             with self.assertRaises(StateCorrupt):
                 store.load()
-        self.assertEqual(open(path, "r", encoding="utf-8").read(), edited)
+        self.assertEqual(_read(path), edited)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(original)
         tweaked = original.replace(
@@ -102,7 +103,7 @@ class Persistence(unittest.TestCase):
         with StateStore(path) as store:
             with self.assertRaises(StateCorrupt):
                 store.load()
-        self.assertEqual(open(path, "r", encoding="utf-8").read(), tweaked)
+        self.assertEqual(_read(path), tweaked)
 
     def test_duplicate_json_key_is_rejected(self):
         directory = support.workdir("duplicate-key")
@@ -132,6 +133,52 @@ class Persistence(unittest.TestCase):
             with self.assertRaises(ConcurrentRunRefused):
                 with StateStore(path):
                     self.fail("second writer entered")
+
+    def test_second_thread_is_refused(self):
+        directory = support.workdir("lock-second-thread")
+        path = os.path.join(directory, "state.json")
+        seen = []
+
+        def other():
+            try:
+                with StateStore(path):
+                    seen.append("entered")
+            except ConcurrentRunRefused:
+                seen.append("refused")
+
+        with StateStore(path):
+            worker = threading.Thread(target=other)
+            worker.start()
+            worker.join(timeout=5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(seen, ["refused"])
+
+    def test_windows_second_handle_lock_is_nonblocking(self):
+        if sys.platform != "win32":
+            self.skipTest("POSIX flock is per process; msvcrt.LK_NBLCK is the Windows check")
+        directory = support.workdir("win-lock")
+        raw = os.path.join(directory, "byte.lock")
+        first = os.open(raw, os.O_RDWR | os.O_CREAT, 0o600)
+        second = os.open(raw, os.O_RDWR)
+        try:
+            _lock_fd(first)
+            with self.assertRaises(OSError):
+                _lock_fd(second)
+        finally:
+            _unlock_fd(first)
+            os.close(first)
+            os.close(second)
+
+    def test_hardlink_is_refused(self):
+        directory = support.workdir("hardlink")
+        path = os.path.join(directory, "state.json")
+        alias = os.path.join(directory, "alias.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+        os.link(path, alias)
+        with self.assertRaises(PathRefused):
+            with StateStore(path):
+                self.fail("hard link was accepted")
 
     def test_traversal_and_symlink_are_refused(self):
         from paper_trader.paths import demo_dir
@@ -197,8 +244,13 @@ class Persistence(unittest.TestCase):
             self.assertEqual(run(refused), 2)
         self.assertFalse(os.path.exists(os.path.join(demo_dir(), "nope.json")))
         self.assertEqual(_outside_files(), before)
-        saved = parse(open(path, "r", encoding="utf-8").read(), ValueError)
+        saved = parse(_read(path), ValueError)
         self.assertEqual(build_report(saved)["cash"], "10096.200")
+
+
+def _read(path):
+    with open(path, "r", encoding="utf-8") as handle:
+        return handle.read()
 
 
 def _outside_files():
