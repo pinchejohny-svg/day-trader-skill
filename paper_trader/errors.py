@@ -29,6 +29,15 @@ class StateMissing(PaperTraderError):
     """Resume was asked for a state file that is not there."""
 
 
+class StateUnflushed(PaperTraderError):
+    """The ledger name was replaced and the flush then failed.
+
+    The file is left where it is. This call does not resume it and does not
+    write a new account over it. Whether the directory entry reached disk
+    is unknown.
+    """
+
+
 class ConcurrentRunRefused(PaperTraderError):
     """Another writer holds this ledger. This run will not trade."""
 

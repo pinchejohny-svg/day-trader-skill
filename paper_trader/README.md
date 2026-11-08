@@ -161,11 +161,18 @@ checks are not.
   with `LK_UNLCK`. Neither module is imported until a lock is taken, so
   importing the package does not require `fcntl` on Windows.
 - Replace: `os.replace` in the same directory after `os.fsync` of the temp
-  file. POSIX then fsyncs the directory. Windows `os.fsync` is `_commit` on a
-  file. `_commit` returns EBADF for a read-only descriptor, so the replaced
-  file is opened `O_RDWR` (and `O_BINARY` when that flag exists) and flushed
-  without writing bytes. The stdlib has no directory fsync, so this still
-  does not commit the directory entry. A crash can still lose the name.
+  file. POSIX then fsyncs the directory. On the Windows run of `5bebda4`,
+  opening the replaced file read-only and calling `os.fsync` raised errno 9
+  after the name was already replaced, and the populated file stayed on
+  disk. The flush now opens that file `O_RDWR` (and `O_BINARY` when that
+  flag exists) and writes no bytes. Python documents Windows `os.fsync` as
+  CRT `_commit`. Microsoft's `_commit` page says an invalid descriptor sets
+  `EBADF` and does not state an access-mode rule. `FlushFileBuffers` requires
+  `GENERIC_WRITE`. This code does not assert that `_commit` calls
+  `FlushFileBuffers`. There is still no stdlib directory fsync, so a crash
+  can lose the name. If the flush raises, the file is left in place and the
+  error is `StateUnflushed`: that call does not resume it and does not write
+  a new account over it.
 - Reparse points: `os.path.islink`, `os.path.isjunction` (POSIX returns
   false), and `st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT` when that
   Windows stat field exists. Junctions use reparse tag

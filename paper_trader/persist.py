@@ -29,6 +29,7 @@ from paper_trader.errors import (
     StateCorrupt,
     StateExists,
     StateMissing,
+    StateUnflushed,
 )
 from paper_trader.jsonutil import parse, pretty
 from paper_trader.paths import demo_dir, kind, read_text, state_path, windows_lexical_hazard
@@ -246,12 +247,22 @@ def _absolute_state(path):
 def _sync_after_replace(directory, path):
     """Commit the new file. Directory fsync exists only on POSIX.
 
-    Windows `os.fsync` is the C `_commit` of a file descriptor. `_commit`
-    fails with EBADF on a read-only descriptor, so the replaced file is
-    opened `O_RDWR` and no bytes are written. `O_BINARY` is added when the
-    interpreter defines it. There is no stdlib call that fsyncs a directory
-    on Windows. A crash can still lose the directory entry even though the
-    file bytes were committed.
+    On the native Windows run of 5bebda4, ``os.open(path, os.O_RDONLY)``
+    then ``os.fsync`` raised ``OSError`` errno 9 after ``os.replace``. The
+    replaced file was already populated. This branch opens that file
+    ``O_RDWR``, writes no bytes, and calls ``os.fsync``. ``O_BINARY`` is
+    included when the interpreter defines it.
+
+    Python documents ``os.fsync`` on Windows as the CRT ``_commit`` function.
+    The Microsoft ``_commit`` page says an invalid descriptor sets ``EBADF``
+    and does not state an access-mode rule. ``FlushFileBuffers`` requires
+    ``GENERIC_WRITE``. This module does not assert that ``_commit`` calls
+    ``FlushFileBuffers``; that was not checked in the CRT sources.
+
+    There is no stdlib directory fsync on Windows. A crash can still lose
+    the directory entry. If this flush raises, ``_atomic_write`` leaves the
+    replaced file in place and raises ``StateUnflushed``. It does not resume
+    that file and does not write a new account over it.
     """
     if sys.platform == "win32":
         if kind(path) != "file":
@@ -297,10 +308,17 @@ def _atomic_write(path, text, replace_existing):
         os.replace(tmp, path)
         replaced = True
         _sync_after_replace(directory, path)
-    except Exception:
+    except Exception as exc:
         if not replaced:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
-        raise
+            raise
+        raise StateUnflushed(
+            "the ledger name was replaced but the flush did not finish "
+            "(%s: %s). The file is left in place. This call does not resume "
+            "it and does not write a new account over it. Directory-entry "
+            "durability is unknown."
+            % (type(exc).__name__, exc)
+        ) from exc

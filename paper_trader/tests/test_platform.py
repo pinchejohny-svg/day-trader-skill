@@ -53,9 +53,10 @@ class WindowsLexicalRules(unittest.TestCase):
     def test_windows_post_replace_flush_opens_writable(self):
         """The Windows branch must not fsync a read-only descriptor.
 
-        CPython maps os.fsync to the CRT _commit on Windows, and _commit
-        fails with EBADF when the handle was opened only for reading. This
-        inspects that branch; it does not mock the call.
+        The native run of 5bebda4 raised errno 9 from os.fsync after
+        os.open(path, os.O_RDONLY), and the replaced file was already
+        populated. This inspects the source of that branch. It does not
+        mock os.fsync and does not claim a CRT-to-FlushFileBuffers mapping.
         """
         path = os.path.join(support.PACKAGE, "persist.py")
         with open(path, "r", encoding="utf-8") as handle:
