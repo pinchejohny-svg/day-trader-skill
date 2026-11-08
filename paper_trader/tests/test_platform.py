@@ -1,5 +1,6 @@
 """Path and lock rules that differ by platform. Not executed during authoring."""
 
+import ast
 import os
 import sys
 import unittest
@@ -48,6 +49,36 @@ class WindowsLexicalRules(unittest.TestCase):
         for path in samples:
             with self.assertRaises(PathRefused):
                 StateStore(path)
+
+    def test_windows_post_replace_flush_opens_writable(self):
+        """The Windows branch must not fsync a read-only descriptor.
+
+        CPython maps os.fsync to the CRT _commit on Windows, and _commit
+        fails with EBADF when the handle was opened only for reading. This
+        inspects that branch; it does not mock the call.
+        """
+        path = os.path.join(support.PACKAGE, "persist.py")
+        with open(path, "r", encoding="utf-8") as handle:
+            tree = ast.parse(handle.read(), filename=path)
+        body = None
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "_sync_after_replace":
+                for stmt in node.body:
+                    test = stmt.test if isinstance(stmt, ast.If) else None
+                    if (
+                        isinstance(test, ast.Compare)
+                        and isinstance(test.left, ast.Attribute)
+                        and test.left.attr == "platform"
+                        and test.comparators
+                        and isinstance(test.comparators[0], ast.Constant)
+                        and test.comparators[0].value == "win32"
+                    ):
+                        body = stmt.body
+        self.assertIsNotNone(body)
+        names = [node.attr for node in ast.walk(ast.Module(body=body, type_ignores=[])) if isinstance(node, ast.Attribute)]
+        self.assertIn("O_RDWR", names)
+        self.assertIn("fsync", names)
+        self.assertNotIn("O_RDONLY", names)
 
     def test_junction_api_is_stdlib_and_this_package_is_not_one(self):
         self.assertTrue(callable(os.path.isjunction))

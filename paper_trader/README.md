@@ -162,9 +162,10 @@ checks are not.
   importing the package does not require `fcntl` on Windows.
 - Replace: `os.replace` in the same directory after `os.fsync` of the temp
   file. POSIX then fsyncs the directory. Windows `os.fsync` is `_commit` on a
-  file; the stdlib has no directory fsync, so the replaced file is fsynced
-  again. That does not commit the directory entry. A crash can still lose
-  the name even when the bytes were committed.
+  file. `_commit` returns EBADF for a read-only descriptor, so the replaced
+  file is opened `O_RDWR` (and `O_BINARY` when that flag exists) and flushed
+  without writing bytes. The stdlib has no directory fsync, so this still
+  does not commit the directory entry. A crash can still lose the name.
 - Reparse points: `os.path.islink`, `os.path.isjunction` (POSIX returns
   false), and `st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT` when that
   Windows stat field exists. Junctions use reparse tag

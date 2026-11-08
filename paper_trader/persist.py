@@ -246,13 +246,20 @@ def _absolute_state(path):
 def _sync_after_replace(directory, path):
     """Commit the new file. Directory fsync exists only on POSIX.
 
-    Windows `os.fsync` is the C `_commit` of a file descriptor. There is no
-    stdlib call that fsyncs a directory there, so this opens the replaced
-    file and fsyncs that. A crash can still lose the directory entry even
-    though the file bytes were committed.
+    Windows `os.fsync` is the C `_commit` of a file descriptor. `_commit`
+    fails with EBADF on a read-only descriptor, so the replaced file is
+    opened `O_RDWR` and no bytes are written. `O_BINARY` is added when the
+    interpreter defines it. There is no stdlib call that fsyncs a directory
+    on Windows. A crash can still lose the directory entry even though the
+    file bytes were committed.
     """
     if sys.platform == "win32":
-        fd = os.open(path, os.O_RDONLY)
+        if kind(path) != "file":
+            raise PathRefused("refusing to flush a non-regular file")
+        flags = os.O_RDWR
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        fd = os.open(path, flags)
         try:
             os.fsync(fd)
         finally:
