@@ -1,0 +1,18 @@
+{
+  "note": "SYNTHETIC gap through a stop. Not market data. Not a measured market loss.",
+  "label": "synthetic",
+  "bars": [
+    {"symbol": "GAP", "start": "2026-11-02T09:30:00", "open": "49.92", "high": "50.00", "low": "49.90", "close": "49.96", "source": "synthetic"},
+    {"symbol": "GAP", "start": "2026-11-02T09:35:00", "open": "49.95", "high": "49.98", "low": "49.92", "close": "49.94", "source": "synthetic"},
+    {"symbol": "GAP", "start": "2026-11-02T09:40:00", "open": "49.94", "high": "49.97", "low": "49.91", "close": "49.93", "source": "synthetic"},
+    {"symbol": "GAP", "start": "2026-11-02T09:45:00", "open": "49.95", "high": "50.20", "low": "49.94", "close": "50.10", "source": "synthetic"},
+    {"symbol": "GAP", "start": "2026-11-02T09:50:00", "open": "50.00", "high": "50.10", "low": "49.96", "close": "50.05", "source": "synthetic"},
+    {"symbol": "GAP", "start": "2026-11-02T09:55:00", "open": "40.00", "high": "40.10", "low": "39.50", "close": "39.80", "source": "synthetic"},
+    {"symbol": "LATE", "start": "2026-11-02T09:30:00", "open": "9.50", "high": "10.00", "low": "9.40", "close": "9.80", "source": "synthetic"},
+    {"symbol": "LATE", "start": "2026-11-02T09:35:00", "open": "9.80", "high": "9.90", "low": "9.50", "close": "9.70", "source": "synthetic"},
+    {"symbol": "LATE", "start": "2026-11-02T09:40:00", "open": "9.70", "high": "9.85", "low": "9.55", "close": "9.75", "source": "synthetic"},
+    {"symbol": "LATE", "start": "2026-11-02T09:45:00", "open": "9.70", "high": "9.95", "low": "9.60", "close": "9.90", "source": "synthetic"},
+    {"symbol": "LATE", "start": "2026-11-02T09:50:00", "open": "9.95", "high": "10.30", "low": "9.90", "close": "10.20", "source": "synthetic"},
+    {"symbol": "LATE", "start": "2026-11-02T09:55:00", "open": "10.10", "high": "10.20", "low": "10.00", "close": "10.15", "source": "synthetic"}
+  ]
+}

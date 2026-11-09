@@ -1,0 +1,13 @@
+{
+  "note": "SYNTHETIC invented prices. Not market data. Not a historical session. Not a full-day result.",
+  "label": "synthetic",
+  "bars": [
+    {"symbol": "SYN", "start": "2026-11-02T09:30:00", "open": "100.00", "high": "102.00", "low": "99.00", "close": "101.00", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:35:00", "open": "101.00", "high": "103.00", "low": "100.00", "close": "102.00", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:40:00", "open": "102.00", "high": "104.00", "low": "101.00", "close": "103.00", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:45:00", "open": "103.00", "high": "106.00", "low": "102.50", "close": "105.00", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:50:00", "open": "105.20", "high": "106.00", "low": "105.00", "close": "105.20", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T09:55:00", "open": "105.10", "high": "105.30", "low": "104.00", "close": "104.50", "source": "synthetic"},
+    {"symbol": "SYN", "start": "2026-11-02T10:00:00", "open": "105.00", "high": "113.00", "low": "104.80", "close": "112.50", "source": "synthetic"}
+  ]
+}

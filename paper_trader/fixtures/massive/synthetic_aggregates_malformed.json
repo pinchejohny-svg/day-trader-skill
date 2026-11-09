@@ -1,0 +1,6 @@
+{
+  "note": "SYNTHETIC malformed price. Not market data.",
+  "results": [
+    {"t": 1793629800000, "o": "NOPE", "h": "102.00", "l": "99.00", "c": "101.00"}
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "note": "SYNTHETIC four-name batch. Not market data. Used to show cash reservation and the three-entry cap.",
+  "label": "synthetic",
+  "bars": [
+    {"symbol": "AAA", "start": "2026-11-02T09:30:00", "open": "2395.00", "high": "2400.00", "low": "2390.00", "close": "2396.00", "source": "synthetic"},
+    {"symbol": "AAA", "start": "2026-11-02T09:35:00", "open": "2396.00", "high": "2398.00", "low": "2392.00", "close": "2397.00", "source": "synthetic"},
+    {"symbol": "AAA", "start": "2026-11-02T09:40:00", "open": "2397.00", "high": "2397.00", "low": "2393.00", "close": "2396.00", "source": "synthetic"},
+    {"symbol": "AAA", "start": "2026-11-02T09:45:00", "open": "2398.00", "high": "2412.00", "low": "2397.00", "close": "2410.00", "source": "synthetic"},
+    {"symbol": "AAA", "start": "2026-11-02T09:50:00", "open": "2400.00", "high": "2409.00", "low": "2396.00", "close": "2404.00", "source": "synthetic"},
+    {"symbol": "BBB", "start": "2026-11-02T09:30:00", "open": "2395.00", "high": "2400.00", "low": "2390.00", "close": "2396.00", "source": "synthetic"},
+    {"symbol": "BBB", "start": "2026-11-02T09:35:00", "open": "2396.00", "high": "2398.00", "low": "2392.00", "close": "2397.00", "source": "synthetic"},
+    {"symbol": "BBB", "start": "2026-11-02T09:40:00", "open": "2397.00", "high": "2397.00", "low": "2393.00", "close": "2396.00", "source": "synthetic"},
+    {"symbol": "BBB", "start": "2026-11-02T09:45:00", "open": "2398.00", "high": "2412.00", "low": "2397.00", "close": "2410.00", "source": "synthetic"},
+    {"symbol": "BBB", "start": "2026-11-02T09:50:00", "open": "2400.00", "high": "2409.00", "low": "2396.00", "close": "2404.00", "source": "synthetic"},
+    {"symbol": "CCC", "start": "2026-11-02T09:30:00", "open": "2395.00", "high": "2400.00", "low": "2390.00", "close": "2396.00", "source": "synthetic"},
+    {"symbol": "CCC", "start": "2026-11-02T09:35:00", "open": "2396.00", "high": "2398.00", "low": "2392.00", "close": "2397.00", "source": "synthetic"},
+    {"symbol": "CCC", "start": "2026-11-02T09:40:00", "open": "2397.00", "high": "2397.00", "low": "2393.00", "close": "2396.00", "source": "synthetic"},
+    {"symbol": "CCC", "start": "2026-11-02T09:45:00", "open": "2398.00", "high": "2412.00", "low": "2397.00", "close": "2410.00", "source": "synthetic"},
+    {"symbol": "CCC", "start": "2026-11-02T09:50:00", "open": "2400.00", "high": "2409.00", "low": "2396.00", "close": "2404.00", "source": "synthetic"},
+    {"symbol": "DDD", "start": "2026-11-02T09:30:00", "open": "2395.00", "high": "2400.00", "low": "2390.00", "close": "2396.00", "source": "synthetic"},
+    {"symbol": "DDD", "start": "2026-11-02T09:35:00", "open": "2396.00", "high": "2398.00", "low": "2392.00", "close": "2397.00", "source": "synthetic"},
+    {"symbol": "DDD", "start": "2026-11-02T09:40:00", "open": "2397.00", "high": "2397.00", "low": "2393.00", "close": "2396.00", "source": "synthetic"},
+    {"symbol": "DDD", "start": "2026-11-02T09:45:00", "open": "2398.00", "high": "2412.00", "low": "2397.00", "close": "2410.00", "source": "synthetic"},
+    {"symbol": "DDD", "start": "2026-11-02T09:50:00", "open": "2400.00", "high": "2409.00", "low": "2396.00", "close": "2404.00", "source": "synthetic"}
+  ]
+}

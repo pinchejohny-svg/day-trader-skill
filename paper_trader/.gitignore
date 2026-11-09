@@ -1,0 +1,6 @@
+.tmp-tests/
+demo-state/
+runs/
+__pycache__/
+*.pyc
+*.lock
