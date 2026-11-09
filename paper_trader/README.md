@@ -245,13 +245,16 @@ Clocks:
 - `fresh_forward` keeps a bar only when the acquisition clock is between
   the bar end and five minutes after it. Older bars are left as stored.
   One late clock does not backfill 09:30 and does not create a fill.
-- `paper_trader session` polls a finite list of injected clocks, then
-  stops. It is not a service, does not wait on the wall clock, and does
-  not stream. `--max-iterations` is 1 to 16, `--max-requests` is 1 to 8,
-  and `--max-runtime-seconds` is 1 to 7200. A clock after 16:00 stops
-  before another read. Live network stays off unless `--acquire` and
-  `--network` are both set; that path is still held. One-shot replay is
-  not this command.
+- `paper_trader session` is one foreground process. Its default clock is
+  the process wall clock and its default pause is the standard library
+  wait. It is not a service and it does not start by itself. It exits at
+  `--max-iterations` (1 to 16), `--max-requests` (1 to 8),
+  `--max-runtime-seconds` (1 to 7200, measured monotonically), at 16:00
+  New York, or on interrupt. `--poll-seconds` defaults to 60 and cannot
+  exceed 240, inside the five-minute freshness window. A test may inject
+  the clock and the wait; that injection is not the unattended run.
+  Live network stays off unless `--acquire` and `--network` are both
+  set; that path is still held. One-shot replay is not this command.
 
 Pagination keeps the current page. A later page is followed only when its
 URL passes the host check, the page budget still has room, and the URL was

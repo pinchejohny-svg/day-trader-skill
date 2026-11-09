@@ -169,16 +169,19 @@ def _forward_command(argv):
 
 
 def _session_command(argv):
-    """Finite session. Proposed until a reviewed run. It does not sleep or self-start.
+    """Foreground wall-clock session. Proposed until a reviewed run.
 
-    ``python3 -B -m paper_trader session --new --state NAME.json --symbols SYN --sessions 2026-11-02 --session-kind regular --early-close none --clocks 2026-11-02T09:35:00,2026-11-02T09:40:00 --max-iterations 8 --max-requests 8 --max-runtime-seconds 1800 --page SYN=paper_trader/fixtures/massive/synthetic_aggregates_round_trip.json --approve orb15-5m-long-next-open-v1 --acknowledge-simulated``
+    It waits between polls and exits. It does not install a service.
+
+    ``python3 -B -m paper_trader session --new --state NAME.json --symbols SYN --sessions 2026-11-02 --session-kind regular --early-close none --max-iterations 8 --max-requests 8 --max-runtime-seconds 1800 --poll-seconds 60 --page SYN=paper_trader/fixtures/massive/synthetic_aggregates_round_trip.json --approve orb15-5m-long-next-open-v1 --acknowledge-simulated``
     """
     parser = argparse.ArgumentParser(
         prog="paper_trader session",
         description=(
-            "One finite paper session over a predeclared list. Not a service, not a stream, "
-            "and not a background task. Live network stays off unless --acquire and --network "
-            "are both set. One-shot replay is the forward historical_replay command."
+            "One foreground session. The process clock and a pause between polls are the "
+            "defaults. It exits at a cap, at 16:00, or on interrupt. Not a service and not "
+            "a background task. Live network stays off unless --acquire and --network are "
+            "both set."
         ),
     )
     parser.add_argument("--state", required=True, help="File name inside paper_trader/demo-state")
@@ -186,10 +189,10 @@ def _session_command(argv):
     parser.add_argument("--sessions", required=True, help="One YYYY-MM-DD session")
     parser.add_argument("--session-kind", required=True, choices=("regular", "unknown"))
     parser.add_argument("--early-close", required=True, choices=("none", "unknown"))
-    parser.add_argument("--clocks", required=True, help="Comma-separated increasing NY stamps")
     parser.add_argument("--max-iterations", required=True, type=int)
     parser.add_argument("--max-requests", required=True, type=int)
     parser.add_argument("--max-runtime-seconds", required=True, type=int)
+    parser.add_argument("--poll-seconds", type=int, default=60, help="Pause between polls, 1 to 240")
     parser.add_argument("--page", action="append", default=[], help="SYM=path under fixtures/")
     parser.add_argument("--new", action="store_true")
     parser.add_argument("--acquire", action="store_true", help="Opt in to a live read")
@@ -209,7 +212,6 @@ def _session_command(argv):
             raise PathRefused("--state must be a file name inside paper_trader/demo-state")
         symbols = [item.strip() for item in args.symbols.split(",") if item.strip()]
         dates = [item.strip() for item in args.sessions.split(",") if item.strip()]
-        clocks = [item.strip() for item in args.clocks.split(",") if item.strip()]
         injected = None
         if args.page:
             loaded = {}
@@ -230,10 +232,10 @@ def _session_command(argv):
             session_kind=args.session_kind,
             early_close=args.early_close,
             state_name=args.state,
-            clocks=clocks,
             max_iterations=args.max_iterations,
             max_requests=args.max_requests,
             max_runtime_seconds=args.max_runtime_seconds,
+            poll_seconds=args.poll_seconds,
             injected_pages=injected,
             acquire=args.acquire,
             dry_run=not args.acquire,
@@ -243,6 +245,8 @@ def _session_command(argv):
             create=args.new,
         )
         sys.stdout.write(pretty(view))
+        if view.get("stop") == "interrupted":
+            return 130
         return 0
     except (ApprovalRequired, PaperTraderError) as exc:
         code = 2 if isinstance(exc, ApprovalRequired) else 3

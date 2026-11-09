@@ -7,11 +7,12 @@ from ``read_url`` and ``fetch_aggregates`` after those gates, and this
 module does not call it on import.
 
 ``historical_replay`` is one bounded replay, not the unattended session.
-``run_session`` is a finite poll over injected clocks. It does not sleep,
-start itself, or run as a service. ``fresh_forward`` uses the acquisition
-clock and never the bar end. Selection is the existing engine rank inside
-the predeclared symbol list. The full-market universe is false. There is
-no broker pathway.
+``run_session`` is one foreground process: it reads the wall clock, waits,
+and stops at a cap or the session cutoff. It does not start itself or
+become a service. Tests may inject the clock and the wait. ``fresh_forward``
+uses the acquisition clock and never the bar end. Selection is the existing
+engine rank inside the predeclared symbol list. The full-market universe
+is false. There is no broker pathway.
 """
 
 from paper_trader.controller import (
@@ -206,16 +207,35 @@ def _closed_pages(pages, clock, provenance):
     return kept, rejected
 
 
-def run_session(*, symbols, session_dates, session_kind, early_close, state_name,
-                clocks, max_iterations, max_requests, max_runtime_seconds,
-                injected_pages=None, between=None, acquire=False, dry_run=True,
-                network_enabled=False, runtime_approval=None, api_key=None,
-                timeout_seconds=5, create=False):
-    """Finite session. One explicit invocation, then it stops.
+def _wall_clock():
+    """New York stamp from the process clock. Not a supplied schedule."""
+    return acquisition_stamp()
 
-    Clocks are injected. This function does not wait on the wall clock and
-    does not start a service. Each iteration keeps only bars closed at that
-    clock. A bar outside that window is not rewritten and is not a fill.
+
+def _wall_monotonic():
+    import time
+    return time.monotonic()
+
+
+def _wall_wait(seconds):
+    """Ordinary pause between polls. This is the runtime default."""
+    import time
+    if seconds > 0:
+        time.sleep(seconds)
+
+
+def run_session(*, symbols, session_dates, session_kind, early_close, state_name,
+                max_iterations, max_requests, max_runtime_seconds, poll_seconds=60,
+                injected_pages=None, clock=None, waiter=None, monotonic=None,
+                acquire=False, dry_run=True, network_enabled=False,
+                runtime_approval=None, api_key=None, timeout_seconds=5, create=False):
+    """One foreground session. It reads the clock, polls, waits, and exits.
+
+    The default clock is the wall clock and the default wait is the stdlib
+    pause. A test may pass ``clock``, ``waiter``, and ``monotonic`` instead.
+    Those stand-ins are not a schedule of future trades. The process does
+    not start itself and does not keep running after a cap, 16:00, or an
+    interrupt. Each poll keeps only bars closed at that reading.
     """
     bind_universe(symbols)
     session = resolve_session(
@@ -226,11 +246,14 @@ def run_session(*, symbols, session_dates, session_kind, early_close, state_name
         report["iterations"] = 0
         report["requests"] = 0
         report["stop"] = session["reason"]
-        report["invocation"] = "finite_session"
+        report["invocation"] = "finite_wall_clock_session"
         return report
     _check_session_bounds(
-        clocks, session_dates, max_iterations, max_requests, max_runtime_seconds,
+        session_dates, max_iterations, max_requests, max_runtime_seconds, poll_seconds,
     )
+    clock_fn = _wall_clock if clock is None else clock
+    wait_fn = _wall_wait if waiter is None else waiter
+    mono = _wall_monotonic if monotonic is None else monotonic
     injected = injected_pages is not None
     if not injected and (not acquire or dry_run or not network_enabled):
         raise Offline("Massive network is disabled")
@@ -248,77 +271,96 @@ def run_session(*, symbols, session_dates, session_kind, early_close, state_name
     last = None
     requests = 0
     iterations = 0
-    previous = None
-    stop = "clocks_exhausted"
+    stop = "max_iterations"
     step_rejected = []
-    for clock in clocks:
-        if iterations >= max_iterations:
-            stop = "max_iterations"
-            break
-        if _span_seconds(clocks[0], clock) > max_runtime_seconds:
-            stop = "max_runtime"
-            break
-        if clock > session_dates[0] + "T16:00:00":
-            stop = "session_cutoff"
-            break
-        if requests >= max_requests:
-            stop = "max_requests"
-            break
-        if between is not None and previous is not None:
-            between(previous, clock)
-        pages = {}
-        step_rejected = []
-        for symbol in symbols:
+    updates = []
+    started = mono()
+    day = session_dates[0] + "T"
+    cutoff = session_dates[0] + "T16:00:00"
+    try:
+        while True:
+            if iterations >= max_iterations:
+                stop = "max_iterations"
+                break
             if requests >= max_requests:
                 stop = "max_requests"
                 break
-            if injected:
-                body = injected_pages(symbol, clock)
-            else:
-                body = read_url(
-                    build_request_url(symbol, session_dates[0], session_dates[0]),
-                    api_key, timeout_seconds, transport=None,
+            if mono() - started >= max_runtime_seconds:
+                stop = "max_runtime"
+                break
+            stamp = clock_fn()
+            if not isinstance(stamp, str) or not stamp.startswith(day) or stamp > cutoff:
+                stop = "session_cutoff"
+                break
+            pages = {}
+            step_rejected = []
+            for symbol in symbols:
+                if requests >= max_requests:
+                    stop = "max_requests"
+                    break
+                if injected:
+                    body = injected_pages(symbol, stamp)
+                else:
+                    body = read_url(
+                        build_request_url(symbol, session_dates[0], session_dates[0]),
+                        api_key, timeout_seconds, transport=None,
+                    )
+                if not isinstance(body, str):
+                    raise FeedRejected("injected page was not text")
+                requests += 1
+                parsed = parse_response(body)
+                eligible, extra = rows_for_clock(parsed["results"], stamp, starts)
+                step_rejected.extend(extra)
+                if not eligible:
+                    continue
+                pages[symbol] = [_page_text({
+                    "adjusted_field": parsed["adjusted_field"],
+                    "note": parsed.get("note"),
+                    "results": eligible,
+                }, provenance)]
+            if pages:
+                if not made and not create:
+                    from paper_trader.errors import StateMissing
+                    raise StateMissing("state file is absent")
+                last = run_recorded(
+                    pages,
+                    symbols=symbols,
+                    session_dates=session_dates,
+                    session_kind=session_kind,
+                    early_close=early_close,
+                    mode="fresh_forward",
+                    ingested_at=stamp,
+                    clock_source="acquisition",
+                    state_name=state_name,
+                    label=label,
+                    create=not made,
+                    provenance=provenance,
                 )
-            if not isinstance(body, str):
-                raise FeedRejected("injected page was not text")
-            requests += 1
-            parsed = parse_response(body)
-            eligible, extra = rows_for_clock(parsed["results"], clock, starts)
-            step_rejected.extend(extra)
-            if not eligible:
-                continue
-            pages[symbol] = [_page_text({
-                "adjusted_field": parsed["adjusted_field"],
-                "note": parsed.get("note"),
-                "results": eligible,
-            }, provenance)]
-        if pages:
-            if not made and not create:
-                from paper_trader.errors import StateMissing
-                raise StateMissing("state file is absent")
-            last = run_recorded(
-                pages,
-                symbols=symbols,
-                session_dates=session_dates,
-                session_kind=session_kind,
-                early_close=early_close,
-                mode="fresh_forward",
-                ingested_at=clock,
-                clock_source="acquisition",
-                state_name=state_name,
-                label=label,
-                create=not made,
-                provenance=provenance,
-            )
-            last["rejections"] = list(last["rejections"]) + step_rejected
-            made = True
-            starts = _stored_starts(path)
-        elif last is not None:
-            last["rejections"] = list(last.get("rejections") or []) + step_rejected
-        previous = clock
-        iterations += 1
-        if stop == "max_requests":
-            break
+                last["rejections"] = list(last["rejections"]) + step_rejected
+                made = True
+                starts = _stored_starts(path)
+            elif last is not None:
+                last["rejections"] = list(last.get("rejections") or []) + step_rejected
+            if last is not None:
+                updates.append({
+                    "cash": last.get("cash"),
+                    "cursor": last.get("cursor"),
+                    "equity": last.get("equity"),
+                    "iteration": iterations + 1,
+                })
+            iterations += 1
+            if stop == "max_requests" or iterations >= max_iterations:
+                if iterations >= max_iterations:
+                    stop = "max_iterations"
+                break
+            remaining = max_runtime_seconds - (mono() - started)
+            if remaining <= 0:
+                stop = "max_runtime"
+                break
+            delay = poll_seconds if poll_seconds < remaining else remaining
+            wait_fn(delay)
+    except KeyboardInterrupt:
+        stop = "interrupted"
     if last is None:
         last = waiting_report(session)
         last["persistence"] = "not_written"
@@ -326,21 +368,23 @@ def run_session(*, symbols, session_dates, session_kind, early_close, state_name
         last["label"] = label
         last["data_verified"] = False
         last["rejections"] = step_rejected
-    last["invocation"] = "finite_session"
+    last["clock"] = "wall_clock" if clock is None else "injected"
+    last["invocation"] = "finite_wall_clock_session"
     last["iterations"] = iterations
+    last["poll_seconds"] = poll_seconds
     last["requests"] = requests
-    last["stop"] = stop
     last["running"] = False
-    last["streaming"] = "finite_iterations_not_a_service_and_not_streaming"
+    last["stop"] = stop
+    last["streaming"] = "foreground_finite_session_not_a_service"
+    last["updates"] = updates
+    last["wait"] = "stdlib_pause" if waiter is None else "injected"
     last["network"] = "injected_not_a_provider_read" if injected else "explicit_acquire_path_unverified"
     return last
 
 
-def _check_session_bounds(clocks, session_dates, max_iterations, max_requests, max_runtime_seconds):
+def _check_session_bounds(session_dates, max_iterations, max_requests, max_runtime_seconds, poll_seconds):
     if len(session_dates) != 1:
         raise FeedRejected("one session date per acquisition")
-    if not isinstance(clocks, list) or not clocks:
-        raise FeedRejected("clock list is empty")
     if isinstance(max_iterations, bool) or not isinstance(max_iterations, int):
         raise FeedRejected("iteration budget is not a whole number")
     if not 1 <= max_iterations <= 16:
@@ -353,22 +397,10 @@ def _check_session_bounds(clocks, session_dates, max_iterations, max_requests, m
         raise FeedRejected("runtime budget is not a whole number")
     if not 1 <= max_runtime_seconds <= 7200:
         raise FeedRejected("runtime budget is outside 1 to 7200 seconds")
-    previous = None
-    day = session_dates[0] + "T"
-    for clock in clocks:
-        if not isinstance(clock, str) or not clock.startswith(day):
-            raise FeedRejected("clock is outside the session")
-        if previous is not None and clock <= previous:
-            raise FeedRejected("clocks are not increasing")
-        previous = clock
-
-
-def _span_seconds(start, end):
-    import datetime
-    fmt = "%Y-%m-%dT%H:%M:%S"
-    opened = datetime.datetime.strptime(start, fmt)
-    closed = datetime.datetime.strptime(end, fmt)
-    return int((closed - opened).total_seconds())
+    if isinstance(poll_seconds, bool) or not isinstance(poll_seconds, int):
+        raise FeedRejected("poll interval is not a whole number")
+    if not 1 <= poll_seconds <= 240:
+        raise FeedRejected("poll interval is outside 1 to 240 seconds")
 
 
 def _stored_starts(path):

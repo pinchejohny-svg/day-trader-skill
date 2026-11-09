@@ -232,20 +232,20 @@ def commit_ledger(state_name, bars, approval, *, create):
     seen = kind(path)
     if seen not in (None, "file"):
         raise FeedRejected("state path is not a new or regular ledger")
-        if seen is None and not create:
-            raise StateMissing("state file is absent")
-        if seen == "file" and create:
-            raise StateExists("state file already exists; resume it or choose a new name")
-        assert_provenance(bars, approval["label"])
-        with StateStore(path) as store:
-            if seen is None:
-                return store.create(bars, approval), [], "created"
-            old = store.load()
-            assert_provenance(old["inputs"], old["approval"]["label"])
-            combined, rejected = plan_resume(old["inputs"], bars)
-            assert_provenance(combined, approval["label"])
-            frozen = store.resume(combined, approval)
-            return frozen, rejected, "resumed"
+    if seen is None and not create:
+        raise StateMissing("state file is absent")
+    if seen == "file" and create:
+        raise StateExists("state file already exists; resume it or choose a new name")
+    assert_provenance(bars, approval["label"])
+    with StateStore(path) as store:
+        if seen is None:
+            return store.create(bars, approval), [], "created"
+        old = store.load()
+        assert_provenance(old["inputs"], old["approval"]["label"])
+        combined, rejected = plan_resume(old["inputs"], bars)
+        assert_provenance(combined, approval["label"])
+        frozen = store.resume(combined, approval)
+        return frozen, rejected, "resumed"
 
 
 def run_recorded(bodies_by_symbol, *, symbols, session_dates, session_kind,

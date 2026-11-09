@@ -136,6 +136,16 @@ class StaticBoundaries(unittest.TestCase):
         self.assertIn("https_get", _called_names(fetch))
         self.assertIn("https_get", _called_names(reader))
         self.assertEqual(_called_names(pages)[0], "validate_next_url")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "sleep":
+                self.assertEqual(_enclosing_function(tree, node), "_wall_wait")
+        session = _function(tree, "run_session")
+        arg_names = [arg.arg for arg in session.args.args]
+        self.assertNotIn("clocks", arg_names)
+        names = [node.id for node in ast.walk(session) if isinstance(node, ast.Name)]
+        self.assertIn("_wall_wait", names)
+        self.assertIn("_wall_clock", names)
+        self.assertIn("_wall_monotonic", names)
 
     def test_bytecode_flag_is_on(self):
         self.assertTrue(sys_dont_write())

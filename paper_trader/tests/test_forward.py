@@ -13,7 +13,8 @@ sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import paper_trader.tests.support as support
-from paper_trader.errors import StateExists
+from paper_trader.controller import commit_ledger
+from paper_trader.errors import StateExists, StateMissing
 from paper_trader.controller import rows_for_clock
 from paper_trader.forward import run_forward, run_session
 from paper_trader.massive import RUNTIME_APPROVAL, FeedRejected, Offline
@@ -38,12 +39,46 @@ def _clear(name):
     return path
 
 
-def _ledger(name):
-    from paper_trader.jsonutil import parse
+def _scripted_clock(stamps):
+    pending = list(stamps)
+
+    def clock():
+        if not pending:
+            return stamps[-1]
+        return pending.pop(0)
+
+    return clock
+
+
+def _scripted_clock_numbers(values):
+    pending = list(values)
+
+    def read():
+        if len(pending) == 1:
+            return pending[0]
+        return pending.pop(0)
+
+    return read
+
+
+def _stuck(value):
+    def read():
+        return value
+
+    return read
+
+
+def _raw(name):
     from paper_trader.paths import state_path
 
     with open(state_path(name), "r", encoding="utf-8") as handle:
-        return parse(handle.read(), ValueError)
+        return handle.read()
+
+
+def _ledger(name):
+    from paper_trader.jsonutil import parse
+
+    return parse(_raw(name), ValueError)
 
 
 def _bars(close):
@@ -98,30 +133,30 @@ class ForwardIntegration(unittest.TestCase):
             bodies_by_symbol=bodies,
         )
         first = run_forward(create=True, **common)
-        second = run_forward(create=False, **common)
+        created = _ledger(name)
         self.assertEqual(first["persistence"], "created")
-        self.assertEqual(second["persistence"], "resumed")
         self.assertEqual(first["cash"], "10096.200")
-        self.assertEqual(first["label"], "synthetic")
+        self.assertEqual(created["cash"], first["cash"])
+        self.assertEqual(created["fingerprint"], first["fingerprint"])
+        self.assertEqual(created["label"], "synthetic")
+        self.assertEqual(created["approval"]["label"], first["label"])
         self.assertEqual(first["provenance"], ["synthetic"])
         self.assertEqual(first["bar_source"], ["synthetic"])
         self.assertEqual(first["adjustment_basis"], ["synthetic"])
         self.assertFalse(first["data_verified"])
-        ledger = _ledger(name)
-        self.assertEqual(ledger["label"], "synthetic")
-        self.assertEqual(ledger["approval"]["label"], first["label"])
-        for bar in ledger["inputs"]:
+        for bar in created["inputs"]:
             self.assertEqual(bar["source"], "synthetic")
             self.assertEqual(bar["provenance"], "synthetic")
             self.assertEqual(bar["adjustment_basis"], "synthetic")
             self.assertIn("SYNTHETIC", bar["note"].upper())
-            self.assertNotEqual(bar["adjustment_basis"], "massive_unadjusted")
-        self.assertEqual(second["cash"], first["cash"])
-        self.assertEqual(second["equity"], first["equity"])
-        self.assertEqual(second["fingerprint"], first["fingerprint"])
-        self.assertEqual(second["orders"], [])
+        second = run_forward(create=False, **common)
+        resumed = _ledger(name)
+        self.assertEqual(second["persistence"], "resumed")
+        self.assertEqual(resumed["inputs"], created["inputs"])
+        self.assertEqual(resumed["fingerprint"], first["fingerprint"])
+        self.assertEqual(second["fingerprint"], resumed["fingerprint"])
+        self.assertEqual(second["cash"], created["cash"])
         self.assertTrue(any(item["reason"] == "restart_duplicate" for item in second["rejections"]))
-        self.assertIn("bar_end_for_recorded_replay_not_a_live_fill", second["freshness"]["assumptions"])
         revised = json.loads(bodies["SYN"][0])
         revised["results"][3]["c"] = "100.00"
         third = run_forward(
@@ -134,11 +169,32 @@ class ForwardIntegration(unittest.TestCase):
             mode="historical_replay",
             bodies_by_symbol={"SYN": [json.dumps(revised)]},
         )
-        self.assertEqual(third["cash"], "10096.200")
-        self.assertEqual(third["fingerprint"], first["fingerprint"])
+        kept = _ledger(name)
+        self.assertEqual(kept["inputs"], created["inputs"])
+        self.assertEqual(kept["fingerprint"], created["fingerprint"])
+        self.assertEqual(third["fingerprint"], kept["fingerprint"])
         self.assertTrue(any(item["reason"] == "correction_not_applied" for item in third["rejections"]))
+        before = _raw(name)
         with self.assertRaises(StateExists):
             run_forward(create=True, **common)
+        self.assertEqual(_raw(name), before)
+
+    def test_commit_rejects_before_any_ledger_write(self):
+        name = "forward-reject.json"
+        _clear(name)
+        approval = support.approval(["SYN"], ["2026-11-02"])
+        with self.assertRaises(StateMissing):
+            commit_ledger(name, [], approval, create=False)
+        from paper_trader.paths import state_path
+        self.assertFalse(os.path.exists(state_path(name)))
+        bad = [{
+            "adjustment_basis": "synthetic",
+            "provenance": "synthetic",
+            "source": "historical",
+        }]
+        with self.assertRaises(FeedRejected):
+            commit_ledger(name, bad, approval, create=True)
+        self.assertFalse(os.path.exists(state_path(name)))
 
     def test_defined_universe_is_ranked_by_the_existing_engine(self):
         name = "forward-rank.json"
@@ -252,7 +308,7 @@ class ForwardIntegration(unittest.TestCase):
         name = "forward-session.json"
         _clear(name)
         page = _text("synthetic_aggregates_round_trip.json")
-        clocks = [
+        stamps = [
             "2026-11-02T09:35:00",
             "2026-11-02T09:40:00",
             "2026-11-02T09:45:00",
@@ -263,8 +319,8 @@ class ForwardIntegration(unittest.TestCase):
         ]
         waits = []
 
-        def between(previous, clock):
-            waits.append((previous, clock))
+        def waiter(seconds):
+            waits.append(seconds)
 
         def pages(_symbol, _clock):
             return page
@@ -275,18 +331,22 @@ class ForwardIntegration(unittest.TestCase):
             session_kind="regular",
             early_close="none",
             state_name=name,
-            clocks=clocks,
-            max_iterations=8,
+            max_iterations=7,
             max_requests=8,
             max_runtime_seconds=1800,
+            poll_seconds=60,
             injected_pages=pages,
-            between=between,
+            clock=_scripted_clock(stamps),
+            waiter=waiter,
+            monotonic=_stuck(0),
         )
         first = run_session(create=True, **common)
-        self.assertEqual(first["stop"], "clocks_exhausted")
+        self.assertEqual(first["stop"], "max_iterations")
+        self.assertEqual(first["clock"], "injected")
+        self.assertEqual(first["wait"], "injected")
         self.assertEqual(first["iterations"], 7)
         self.assertEqual(first["requests"], 7)
-        self.assertEqual(len(waits), 6)
+        self.assertEqual(waits, [60, 60, 60, 60, 60, 60])
         self.assertEqual(first["cash"], "10096.200")
         self.assertEqual(first["invocation"], "finite_session")
         self.assertEqual(first["network"], "injected_not_a_provider_read")
@@ -308,9 +368,28 @@ class ForwardIntegration(unittest.TestCase):
             self.assertEqual(bar["adjustment_basis"], "synthetic")
             self.assertIn("SYNTHETIC", bar["note"].upper())
         self.assertNotIn("massive_unadjusted", json.dumps(ledger["inputs"]))
-        second = run_session(create=False, **common)
+        second = run_session(
+            create=False,
+            symbols=["SYN"],
+            session_dates=["2026-11-02"],
+            session_kind="regular",
+            early_close="none",
+            state_name=name,
+            max_iterations=7,
+            max_requests=8,
+            max_runtime_seconds=1800,
+            poll_seconds=60,
+            injected_pages=pages,
+            clock=_scripted_clock(stamps),
+            waiter=waiter,
+            monotonic=_stuck(0),
+        )
         self.assertEqual(second["cash"], "10096.200")
         self.assertEqual(second["fingerprint"], first["fingerprint"])
+        again = _ledger(name)
+        self.assertEqual(again["inputs"], ledger["inputs"])
+        self.assertEqual(again["fingerprint"], ledger["fingerprint"])
+        self.assertEqual(second["fingerprint"], again["fingerprint"])
         self.assertEqual(
             [item["type"] for item in second["selection"]].count("entry"),
             1,
@@ -322,11 +401,13 @@ class ForwardIntegration(unittest.TestCase):
             session_kind="regular",
             early_close="none",
             state_name="forward-cap.json",
-            clocks=clocks,
             max_iterations=2,
             max_requests=8,
             max_runtime_seconds=1800,
             injected_pages=pages,
+            clock=_scripted_clock(stamps),
+            waiter=waiter,
+            monotonic=_stuck(0),
             create=True,
         )
         self.assertEqual(capped["stop"], "max_iterations")
@@ -339,11 +420,13 @@ class ForwardIntegration(unittest.TestCase):
             session_kind="regular",
             early_close="none",
             state_name="forward-requests.json",
-            clocks=clocks,
             max_iterations=8,
             max_requests=1,
             max_runtime_seconds=1800,
             injected_pages=pages,
+            clock=_scripted_clock(stamps),
+            waiter=waiter,
+            monotonic=_stuck(0),
             create=True,
         )
         self.assertEqual(requested["stop"], "max_requests")
@@ -355,11 +438,13 @@ class ForwardIntegration(unittest.TestCase):
             session_kind="regular",
             early_close="none",
             state_name="forward-runtime.json",
-            clocks=["2026-11-02T09:35:00", "2026-11-02T09:40:00"],
             max_iterations=8,
             max_requests=8,
             max_runtime_seconds=60,
             injected_pages=pages,
+            clock=_scripted_clock(stamps),
+            waiter=waiter,
+            monotonic=_scripted_clock_numbers([0, 0, 120]),
             create=True,
         )
         self.assertEqual(timed["stop"], "max_runtime")
@@ -377,13 +462,45 @@ class ForwardIntegration(unittest.TestCase):
             session_kind="regular",
             early_close="none",
             state_name="forward-cutoff.json",
-            clocks=["2026-11-02T16:00:01"],
             max_iterations=8,
             max_requests=8,
-            max_runtime_seconds=1,
+            max_runtime_seconds=1800,
             injected_pages=counting,
+            clock=lambda: "2026-11-02T16:00:01",
+            waiter=waiter,
+            monotonic=_stuck(0),
             create=True,
         )
+        interrupted = []
+
+        def interrupt(_seconds):
+            raise KeyboardInterrupt
+
+        _clear("forward-interrupt.json")
+        stopped = run_session(
+            symbols=["SYN"],
+            session_dates=["2026-11-02"],
+            session_kind="regular",
+            early_close="none",
+            state_name="forward-interrupt.json",
+            max_iterations=4,
+            max_requests=8,
+            max_runtime_seconds=1800,
+            injected_pages=pages,
+            clock=_scripted_clock(stamps),
+            waiter=interrupt,
+            monotonic=_stuck(0),
+            create=True,
+        )
+        interrupted.append(stopped["stop"])
+        self.assertEqual(interrupted, ["interrupted"])
+        self.assertEqual(stopped["iterations"], 1)
+        self.assertEqual(stopped["requests"], 1)
+        partial = _ledger("forward-interrupt.json")
+        self.assertEqual(len(partial["inputs"]), 1)
+        self.assertEqual(partial["inputs"][0]["provenance"], "injected")
+        self.assertEqual(partial["inputs"][0]["source"], "synthetic")
+        self.assertEqual(stopped["fingerprint"], partial["fingerprint"])
         self.assertEqual(cutoff["stop"], "session_cutoff")
         self.assertEqual(cutoff["requests"], 0)
         self.assertEqual(calls, [])
