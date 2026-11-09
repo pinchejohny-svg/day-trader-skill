@@ -40,6 +40,10 @@ def _body(name):
         return handle.read()
 
 
+def _fills(doc):
+    return [event for event in doc["events"] if event.get("type") in ("entry", "exit")]
+
+
 def _run(name, **kwargs):
     settings = {
         "symbols": ["SYN"],
@@ -281,21 +285,84 @@ class MassiveOffline(unittest.TestCase):
             assert_timeout(True)
 
     def test_restart_duplicate_does_not_add_a_second_fill(self):
-        parsed = parse_response(_body("synthetic_aggregates_round_trip.json"))
-        bars, _rejected, _notes = translate_results(
-            parsed["results"],
-            symbol="SYN",
-            mode="recorded_batch_replay",
-            source="synthetic",
+        from paper_trader.errors import StateExists
+        from paper_trader.jsonutil import parse
+        from paper_trader.paths import kind, state_path
+
+        name = "massive-restart.json"
+        path = state_path(name)
+        if kind(path) == "file":
+            os.unlink(path)
+        body = _body("synthetic_aggregates_round_trip.json")
+        first = run_recorded(
+            {"SYN": [body]},
+            symbols=["SYN"],
+            session_dates=["2026-11-02"],
+            session_kind="regular",
+            early_close="none",
+            state_name=name,
+            create=True,
         )
-        combined, rejections = plan_resume(bars, bars)
-        self.assertEqual(combined, bars)
-        self.assertTrue(any(item["reason"] == "restart_duplicate" for item in rejections))
-        first = _run("synthetic_aggregates_round_trip.json")
-        second = _run("synthetic_aggregates_round_trip.json", prior_inputs=bars)
-        self.assertEqual(first["fingerprint"], second["fingerprint"])
-        self.assertEqual(second["cash"], "10096.200")
+        with open(path, "r", encoding="utf-8") as handle:
+            created = parse(handle.read(), ValueError)
+        stored = created["inputs"]
+        self.assertEqual(created["fingerprint"], first["fingerprint"])
+        self.assertEqual(created["cash"], "10096.200")
+        second = run_recorded(
+            {"SYN": [body]},
+            symbols=["SYN"],
+            session_dates=["2026-11-02"],
+            session_kind="regular",
+            early_close="none",
+            state_name=name,
+            create=False,
+            prior_inputs=stored,
+        )
+        with open(path, "r", encoding="utf-8") as handle:
+            resumed = parse(handle.read(), ValueError)
+        self.assertEqual(second["fingerprint"], first["fingerprint"])
+        self.assertEqual(resumed["fingerprint"], created["fingerprint"])
+        self.assertEqual(resumed["cash"], created["cash"])
+        self.assertEqual(resumed["positions"], created["positions"])
+        self.assertEqual(_fills(resumed), _fills(created))
+        self.assertEqual(resumed["inputs"], created["inputs"])
         self.assertEqual(second["orders"], [])
+        self.assertTrue(any(item["reason"] == "restart_duplicate" for item in second["rejections"]))
+        changed = json.loads(body)
+        changed["note"] = "SYNTHETIC metadata-different resend. Not market data."
+        third = run_recorded(
+            {"SYN": [json.dumps(changed)]},
+            symbols=["SYN"],
+            session_dates=["2026-11-02"],
+            session_kind="regular",
+            early_close="none",
+            state_name=name,
+            create=False,
+            prior_inputs=stored,
+        )
+        with open(path, "r", encoding="utf-8") as handle:
+            kept = parse(handle.read(), ValueError)
+        self.assertTrue(any(item["reason"] == "correction_not_applied" for item in third["rejections"]))
+        self.assertEqual(kept["inputs"], created["inputs"])
+        self.assertEqual(kept["fingerprint"], created["fingerprint"])
+        self.assertEqual(kept["cash"], created["cash"])
+        self.assertEqual(kept["positions"], created["positions"])
+        self.assertEqual(_fills(kept), _fills(created))
+        self.assertEqual(third["fingerprint"], first["fingerprint"])
+        with self.assertRaises(StateExists):
+            run_recorded(
+                {"SYN": [body]},
+                symbols=["SYN"],
+                session_dates=["2026-11-02"],
+                session_kind="regular",
+                early_close="none",
+                state_name=name,
+                create=True,
+                prior_inputs=stored,
+            )
+        with open(path, "r", encoding="utf-8") as handle:
+            after = handle.read()
+        self.assertEqual(parse(after, ValueError)["fingerprint"], created["fingerprint"])
 
     def test_split_adjusted_page_is_refused(self):
         with self.assertRaises(FeedRejected):

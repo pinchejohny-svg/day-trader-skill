@@ -147,6 +147,7 @@ def _price_key(bar):
         for key in (
             "symbol", "start", "open", "high", "low", "close",
             "provider_volume", "provenance", "adjustment_basis",
+            "note", "response_adjusted_field",
         )
     )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
