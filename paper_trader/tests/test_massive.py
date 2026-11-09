@@ -319,7 +319,8 @@ class MassiveOffline(unittest.TestCase):
         absent = parse_response('{"results": []}')
         present = parse_response('{"adjusted": false, "results": []}')
         self.assertEqual(adjustment_basis(absent, synthetic=False), "unverified")
-        self.assertEqual(adjustment_basis(present, synthetic=False), "massive_unadjusted")
+        self.assertEqual(present["adjusted_field"], "false")
+        self.assertEqual(adjustment_basis(present, synthetic=False), "unverified")
         self.assertEqual(adjustment_basis(absent, synthetic=True), "synthetic")
         bars, _rejected, _notes = translate_results(
             [{"t": "1793629800000", "o": "100.00", "h": "102.00", "l": "99.00", "c": "101.00"}],
@@ -329,6 +330,8 @@ class MassiveOffline(unittest.TestCase):
             ingested_at="2026-11-02T10:05:00",
             adjustment_basis="unverified",
             clock_source="acquisition",
+            provenance="unverified_read",
+            response_adjusted_field="absent",
         )
         self.assertEqual(bars[0]["observed_at"], "2026-11-02T10:05:00")
         self.assertNotEqual(bars[0]["observed_at"], "2026-11-02T09:35:00")
@@ -341,6 +344,7 @@ class MassiveOffline(unittest.TestCase):
                 source="historical",
                 adjustment_basis="unverified",
                 clock_source="supplied",
+                provenance="unverified_read",
             )
 
     def test_symbol_budget_is_enforced_before_pages(self):

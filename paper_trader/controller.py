@@ -12,9 +12,10 @@ closed. The symbol cap is enforced before any page is parsed.
 
 Provider ``v`` is copied onto each bar as ``provider_volume``. The engine
 does not rank or filter on volume, and this module does not claim that it
-does. ``adjustment_basis`` is ``massive_unadjusted`` only when a live
-response field says adjusted is false. A missing field stays ``unverified``.
-Synthetic fixtures stay ``synthetic``.
+does. An injected or synthetic page stays ``synthetic`` on the ledger.
+``adjusted: false`` is recorded and is not a verified provider basis.
+A non-injected read stays ``unverified``. Missing or incompatible
+provenance fails closed before a write.
 """
 
 import datetime
@@ -27,7 +28,7 @@ from paper_trader.massive import (
     MAX_SYMBOLS as FEED_SYMBOLS,
     RAW_STORAGE_POLICY,
     FeedRejected,
-    adjustment_basis as response_basis,
+    ny_wall_from_unix_ms,
     parse_response,
     translate_results,
     validate_next_url,
@@ -35,7 +36,7 @@ from paper_trader.massive import (
 from paper_trader.paths import kind, state_path
 from paper_trader.persist import StateStore
 from paper_trader.report import build_report
-from paper_trader.spec import ACK, MAX_SYMBOLS as ENGINE_SYMBOLS, STRATEGY_ID
+from paper_trader.spec import ACK, MAX_SYMBOLS as ENGINE_SYMBOLS, STRATEGY_ID, add_minutes
 
 
 def bind_universe(symbols):
@@ -143,9 +144,80 @@ def plan_resume(stored_inputs, additions):
 def _price_key(bar):
     text = "|".join(
         str(bar.get(key))
-        for key in ("symbol", "start", "open", "high", "low", "close", "provider_volume")
+        for key in (
+            "symbol", "start", "open", "high", "low", "close",
+            "provider_volume", "provenance", "adjustment_basis",
+        )
     )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def assert_provenance(bars, label):
+    """Refuse a write when durable provenance is missing or mixed."""
+    if not isinstance(bars, list):
+        raise FeedRejected("provenance is absent")
+    for bar in bars:
+        if not isinstance(bar, dict):
+            raise FeedRejected("provenance is absent")
+        provenance = bar.get("provenance")
+        source = bar.get("source")
+        basis = bar.get("adjustment_basis")
+        note = bar.get("note")
+        if provenance not in ("synthetic", "injected", "unverified_read"):
+            raise FeedRejected("provenance is absent")
+        if basis == "massive_unadjusted":
+            raise FeedRejected("adjustment flag is not provenance")
+        invented = provenance in ("synthetic", "injected")
+        if invented:
+            if source != "synthetic" or label != "synthetic" or basis != "synthetic":
+                raise FeedRejected("invented provenance is incompatible")
+            if note is not None and (not isinstance(note, str) or "SYNTHETIC" not in note.upper()):
+                raise FeedRejected("invented provenance is incompatible")
+        elif source != "historical" or label != "historical" or basis != "unverified":
+            raise FeedRejected("read provenance is incompatible")
+
+
+def rows_for_clock(results, clock, stored_starts):
+    """Bars closed at ``clock`` and not yet late. Future bars are excluded.
+
+    The window matches the engine: ``end <= clock <= end + 5 minutes``.
+    A new ledger must include the 09:30 bar. A later poll does not resubmit
+    a bar that has already fallen outside the window.
+    """
+    if not isinstance(clock, str):
+        raise FeedRejected("clock is not a stamp")
+    eligible = []
+    rejected = []
+    for row in results:
+        if not isinstance(row, dict):
+            rejected.append({"reason": "malformed_row"})
+            continue
+        try:
+            start = ny_wall_from_unix_ms(row.get("t"))
+        except FeedRejected as exc:
+            rejected.append({"reason": str(exc)})
+            continue
+        end = add_minutes(start, 5)
+        if clock < end:
+            rejected.append({"reason": "not_closed", "start": start})
+            continue
+        if clock > add_minutes(end, 5):
+            rejected.append({"reason": "late_at_clock", "start": start})
+            continue
+        eligible.append(row)
+    if stored_starts:
+        return eligible, rejected
+    starts = []
+    for row in eligible:
+        starts.append(ny_wall_from_unix_ms(row.get("t"))[11:])
+    if "09:30:00" not in starts:
+        for row in eligible:
+            rejected.append({
+                "reason": "session_not_anchored_not_stored",
+                "start": ny_wall_from_unix_ms(row.get("t")),
+            })
+        return [], rejected
+    return eligible, rejected
 
 
 def commit_ledger(state_name, bars, approval, *, create):
@@ -160,23 +232,26 @@ def commit_ledger(state_name, bars, approval, *, create):
     seen = kind(path)
     if seen not in (None, "file"):
         raise FeedRejected("state path is not a new or regular ledger")
-    if seen is None and not create:
-        raise StateMissing("state file is absent")
-    if seen == "file" and create:
-        raise StateExists("state file already exists; resume it or choose a new name")
-    with StateStore(path) as store:
-        if seen is None:
-            return store.create(bars, approval), [], "created"
-        old = store.load()
-        combined, rejected = plan_resume(old["inputs"], bars)
-        frozen = store.resume(combined, approval)
-        return frozen, rejected, "resumed"
+        if seen is None and not create:
+            raise StateMissing("state file is absent")
+        if seen == "file" and create:
+            raise StateExists("state file already exists; resume it or choose a new name")
+        assert_provenance(bars, approval["label"])
+        with StateStore(path) as store:
+            if seen is None:
+                return store.create(bars, approval), [], "created"
+            old = store.load()
+            assert_provenance(old["inputs"], old["approval"]["label"])
+            combined, rejected = plan_resume(old["inputs"], bars)
+            assert_provenance(combined, approval["label"])
+            frozen = store.resume(combined, approval)
+            return frozen, rejected, "resumed"
 
 
 def run_recorded(bodies_by_symbol, *, symbols, session_dates, session_kind,
                  early_close, mode="recorded_batch_replay", ingested_at=None,
                  clock_source="supplied", prior_inputs=None, state_name=None,
-                 label="synthetic", create=False):
+                 label="synthetic", create=False, provenance=None):
     """Translate pages and replay them. Pass ``state_name`` to persist.
 
     The operational entrypoint always passes ``state_name``. Calling this
@@ -188,6 +263,14 @@ def run_recorded(bodies_by_symbol, *, symbols, session_dates, session_kind,
         raise FeedRejected(session["reason"])
     if label not in ("synthetic", "historical"):
         raise FeedRejected("label is not recognized")
+    if provenance is None:
+        provenance = "synthetic" if label == "synthetic" else None
+    if provenance is None:
+        raise FeedRejected("provenance is absent")
+    if provenance in ("synthetic", "injected") and label != "synthetic":
+        raise FeedRejected("invented provenance is incompatible")
+    if provenance == "unverified_read" and label != "historical":
+        raise FeedRejected("read provenance is incompatible")
     if not isinstance(bodies_by_symbol, dict):
         raise FeedRejected("bodies must be a mapping of symbol to pages")
     if set(bodies_by_symbol) - set(symbols):
@@ -206,7 +289,12 @@ def run_recorded(bodies_by_symbol, *, symbols, session_dates, session_kind,
             raise FeedRejected("pages for a symbol must be a list")
         for page in pages:
             parsed = parse_response(page)
-            basis = "synthetic" if label == "synthetic" else response_basis(parsed, synthetic=False)
+            if parsed.get("provenance") not in (None, provenance):
+                raise FeedRejected("provenance is incompatible")
+            note = parsed.get("note")
+            if isinstance(note, str) and "SYNTHETIC" in note.upper() and provenance == "unverified_read":
+                raise FeedRejected("invented provenance is incompatible")
+            basis = "synthetic" if provenance in ("synthetic", "injected") else "unverified"
             translated, rejected, notes = translate_results(
                 parsed["results"],
                 symbol=symbol,
@@ -215,6 +303,9 @@ def run_recorded(bodies_by_symbol, *, symbols, session_dates, session_kind,
                 ingested_at=ingested_at,
                 adjustment_basis=basis,
                 clock_source=clock_source,
+                provenance=provenance,
+                note=note,
+                response_adjusted_field=parsed["adjusted_field"],
             )
             bars.extend(translated)
             rejections.extend(rejected)
@@ -239,6 +330,7 @@ def run_recorded(bodies_by_symbol, *, symbols, session_dates, session_kind,
     if prior_inputs is not None:
         bars, resume_rejections = plan_resume(prior_inputs, bars)
         rejections.extend(resume_rejections)
+    assert_provenance(bars, label)
     approval = _approval(symbols, session_dates, label)
     action = "memory"
     if state_name is not None:
@@ -276,6 +368,7 @@ def _view(frozen, report, rejections, assumptions, adjusted, session, mode,
             "event_time": event.get("event_time"),
             "observed_at": event.get("observed_at"),
             "price_source": event.get("price_source"),
+            "fee": event.get("fee"),
             "reason": event.get("reason"),
             "symbol": event.get("symbol"),
             "type": event.get("type"),
@@ -310,9 +403,20 @@ def _view(frozen, report, rejections, assumptions, adjusted, session, mode,
         "full_market_universe": False,
         "incomplete": report["incomplete"],
         "incomplete_reasons": report["incomplete_reasons"],
+        "adjustment_basis": sorted({
+            bar.get("adjustment_basis") for bar in frozen["inputs"] if isinstance(bar, dict)
+        }),
+        "bar_source": sorted({
+            bar.get("source") for bar in frozen["inputs"] if isinstance(bar, dict)
+        }),
+        "data_verified": False,
+        "invocation": "one_replay",
         "label": frozen["label"],
         "licensed": "not_asserted",
         "market_data": False,
+        "provenance": sorted({
+            bar.get("provenance") for bar in frozen["inputs"] if isinstance(bar, dict)
+        }),
         "network": "not_called",
         "orders": [],
         "performance": {

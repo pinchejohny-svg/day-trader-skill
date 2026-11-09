@@ -198,9 +198,17 @@ def parse_response(text):
     next_url = doc.get("next_url", None)
     if next_url is not None and not isinstance(next_url, str):
         raise FeedRejected("next_url was not a string")
+    note = doc.get("note")
+    provenance = doc.get("provenance")
+    if provenance is not None and provenance not in ("synthetic", "injected", "unverified_read"):
+        raise FeedRejected("provenance is incompatible")
+    if note is not None and not isinstance(note, str):
+        raise FeedRejected("page note is not text")
     return {
         "adjusted_field": "absent" if adjusted is None else "false",
         "next_url": next_url,
+        "note": note,
+        "provenance": provenance,
         "request_adjusted": ADJUSTED,
         "results": results,
     }
@@ -245,22 +253,19 @@ def bar_hash(symbol, start_ms, open_, high, low, close, volume=""):
 
 
 def adjustment_basis(parsed, *, synthetic):
-    """Name the price basis from the response, not from the request flag.
+    """Separate an invented page from an unverified read.
 
-    ``massive_unadjusted`` is used only when the response itself says
-    ``adjusted`` is false. A missing field stays ``unverified``. A synthetic
-    fixture is never described as a provider adjustment.
+    ``adjusted: false`` is only the response flag. It does not verify the
+    tape and it does not produce a provider-verified basis. Invented pages
+    stay ``synthetic``. A non-injected read stays ``unverified``.
     """
     if synthetic:
         return "synthetic"
     if not isinstance(parsed, dict):
         raise FeedRejected("adjustment basis has no page")
-    field = parsed.get("adjusted_field")
-    if field == "false":
-        return "massive_unadjusted"
-    if field == "absent":
-        return "unverified"
-    raise FeedRejected("adjustment basis is not recognized")
+    if parsed.get("adjusted_field") not in ("false", "absent"):
+        raise FeedRejected("adjustment basis is not recognized")
+    return "unverified"
 
 
 def acquisition_stamp():
@@ -294,7 +299,8 @@ def _price(row, key):
 
 
 def translate_results(results, *, symbol, mode, source, ingested_at=None,
-                      adjustment_basis="synthetic", clock_source="supplied"):
+                      adjustment_basis="synthetic", clock_source="supplied",
+                      provenance=None, note=None, response_adjusted_field="not_a_provider_response"):
     """Turn one results list into engine bars or rejection records.
 
     ``recorded_batch_replay`` sets ``observed_at`` to the bar end. That is a
@@ -309,10 +315,23 @@ def translate_results(results, *, symbol, mode, source, ingested_at=None,
         raise FeedRejected("replay mode is not recognized")
     if source not in ("synthetic", "historical"):
         raise FeedRejected("bar source is not recognized")
-    if adjustment_basis not in ("synthetic", "massive_unadjusted", "unverified"):
-        raise FeedRejected("adjustment basis is not recognized")
-    if adjustment_basis == "massive_unadjusted" and source == "synthetic":
-        raise FeedRejected("a synthetic tape cannot claim provider adjustment")
+    if provenance is None:
+        if source != "synthetic":
+            raise FeedRejected("provenance is absent")
+        provenance = "synthetic"
+    if adjustment_basis == "massive_unadjusted":
+        raise FeedRejected("adjustment flag is not provenance")
+    if provenance not in ("synthetic", "injected", "unverified_read"):
+        raise FeedRejected("provenance is incompatible")
+    if provenance in ("synthetic", "injected"):
+        if source != "synthetic" or adjustment_basis != "synthetic":
+            raise FeedRejected("invented provenance is incompatible")
+        if note is not None and (not isinstance(note, str) or "SYNTHETIC" not in note.upper()):
+            raise FeedRejected("invented provenance is incompatible")
+    elif source != "historical" or adjustment_basis != "unverified":
+        raise FeedRejected("read provenance is incompatible")
+    if response_adjusted_field not in ("false", "absent", "not_a_provider_response"):
+        raise FeedRejected("adjustment flag is not provenance")
     if mode == "fresh_forward":
         if clock_source != "acquisition" or not isinstance(ingested_at, str):
             raise FeedRejected("fresh forward requires the acquisition clock")
@@ -376,11 +395,15 @@ def translate_results(results, *, symbol, mode, source, ingested_at=None,
             "low": low,
             "observed_at": observed,
             "open": open_,
+            "provenance": provenance,
+            "response_adjusted_field": response_adjusted_field,
             "source": source,
             "start": wall,
             "symbol": symbol,
             "_assumption": assumption,
         }
+        if isinstance(note, str):
+            item["note"] = note
         if volume is not None:
             item["provider_volume"] = volume
         bars.append(item)

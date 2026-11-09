@@ -231,18 +231,27 @@ that it does. A second row with the same start and different prices or
 volume is hashed and not applied. The stored row remains the one resumed
 later.
 
-`massive_unadjusted` is used only when the response field `adjusted` is
-false. A missing field stays `unverified`. The request flag is not treated
-as that proof. A synthetic fixture stays `synthetic`.
+`adjusted: false` is stored as a response flag and is not a verified
+basis. An injected fixture or a synthetic replay persists `provenance`
+`injected` or `synthetic`, with label and bar source `synthetic`. A
+non-injected read would persist `unverified_read` and label `historical`,
+still unverified. Missing or mixed provenance fails closed before a write.
+The same fields are on the ledger and on the view.
 
 Clocks:
 
-- `historical_replay` sets `observed_at` to the bar end. That is a completed
-  tape, not an acquisition and not an executable past price.
-- `fresh_forward` sets `observed_at` and the ingestion time from the
-  acquisition clock. It never substitutes the bar end. A late or unclosed
-  observation takes the existing stale path. No fill is queued when the next
-  eligible bar is absent.
+- `historical_replay` sets `observed_at` to the bar end. That is one
+  completed-tape replay, not the unattended session.
+- `fresh_forward` keeps a bar only when the acquisition clock is between
+  the bar end and five minutes after it. Older bars are left as stored.
+  One late clock does not backfill 09:30 and does not create a fill.
+- `paper_trader session` polls a finite list of injected clocks, then
+  stops. It is not a service, does not wait on the wall clock, and does
+  not stream. `--max-iterations` is 1 to 16, `--max-requests` is 1 to 8,
+  and `--max-runtime-seconds` is 1 to 7200. A clock after 16:00 stops
+  before another read. Live network stays off unless `--acquire` and
+  `--network` are both set; that path is still held. One-shot replay is
+  not this command.
 
 Pagination keeps the current page. A later page is followed only when its
 URL passes the host check, the page budget still has room, and the URL was
