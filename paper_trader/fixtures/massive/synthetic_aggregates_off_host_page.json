@@ -1,0 +1,7 @@
+{
+  "note": "SYNTHETIC page whose next_url leaves the allowlist. Not market data. Do not request it.",
+  "next_url": "https://evil.example/v2/aggs/ticker/SYN/range/5/minute/2026-11-02/2026-11-02",
+  "results": [
+    {"t": 1793629800000, "o": "100.00", "h": "102.00", "l": "99.00", "c": "101.00"}
+  ]
+}

@@ -4,12 +4,15 @@ Simulated long-only accounting for one human-approved scope. A higher cash
 balance on a synthetic fixture is arithmetic on invented bars. It is not a
 market result, a broker fill, or evidence that the rule makes money.
 
-This package does not download data, open a socket, spawn a process, read
-credentials, or import the day-trader skills. There is no broker object and
-no paper-trading flag. `forward.py` has no callable feed. State files can be
-written only under `paper_trader/demo-state`. A `..` path or a symlink is
-refused. `--new` does not overwrite. A missing or stale bar pauses the fill
-and leaves an open position unresolved; it does not book an exit.
+Importing this package does not download data, open a socket, spawn a
+process, read a credential, or import the day-trader skills. There is no
+broker object and no paper-trading flag. `forward.py` has no callable feed.
+`massive.py` contains one inert HTTPS helper that nothing calls unless a
+later run passes an explicit approval phrase and turns the network flag on.
+A key in the environment does not do that. State files can be written only
+under `paper_trader/demo-state`. A `..` path or a symlink is refused.
+`--new` does not overwrite. A missing or stale bar pauses the fill and
+leaves an open position unresolved; it does not book an exit.
 
 ## What is reused
 
@@ -202,6 +205,60 @@ python -B -m paper_trader --new --fixture paper_trader/fixtures/synthetic_round_
 
 The Linux result for `c9f23cc30bec4cbbb957caaa551d354f38dcde79` does not
 cover this Windows code. `forward.py` is still only the unimplemented marker.
+
+## Massive adapter
+
+`massive.py` and `controller.py` are an inert reader and a local replay
+helper. They do not change fill prices, stops, targets, or cash. The engine
+still fills the next bar's open, with the same slippage and fees.
+
+The verified request is `GET https://api.massive.com/v2/aggs/ticker/{ticker}/range/5/minute/{from}/{to}`
+with `adjusted=false`, `sort=asc`, and `limit=5000`. The verified results
+contract does not echo that flag. If a page contains `adjusted: true` it is
+refused. If the field is absent, the view records the absence and does not
+treat that as proof the prices are unadjusted. The bearer token, when
+a later approved call supplies one, is a header. It is not a query parameter
+and it is not written into an error. Redirects, any other host, and a
+`next_url` with userinfo or an `apiKey` query are refused. `https_get` is
+not called by import, by the controller, or by the tests.
+
+`results[].t` is the Unix-millisecond start of the bar. No `results` entry
+means no bar. A second row with the same start and different prices is
+hashed and ignored. The first row stays. Nothing rewrites a fill already
+produced from the stored prefix.
+
+Two replay modes exist, and neither is a live order:
+
+- `recorded_batch_replay` sets `observed_at` to the bar end. That is a
+  completed-tape assumption. It is not an executable past price and it is
+  not fresh-forward.
+- `as_observed` uses a caller-supplied `ingested_at`. A late or unclosed
+  observation takes the existing stale path. This package does not read the
+  system clock.
+
+The controller does not write a ledger. An existing state file is not opened
+and is not reset. A restart replays the stored bars and may append only a
+strictly later suffix, which is the rule `StateStore.resume` already uses.
+There is no streaming cursor. A duplicate bar is dropped. A correction of a
+stored bar is not applied.
+
+The symbol list is the caller's predeclared list, at most 20 names. The
+all-tickers and full-market snapshot field lists were not in the verified
+aggregates contract, so `full_market_universe` stays
+`not_implemented_contract_unverified`. No scan of the whole market is claimed.
+
+Saturday and Sunday are refused. Any other date is refused unless the caller
+passes `human_asserts_regular_nyse_session`. That sentence is not an NYSE
+calendar. Holiday and early-close handling are still not implemented. The
+engine's incomplete flags are copied into the view and are never forced true
+for a full session. No entry is created when there is no signal, no next
+bar, or a gap.
+
+Raw provider bodies are not stored. Checked-in pages are synthetic fixtures
+under `fixtures/massive/`. Status in the view separates `ready` (source is
+present and the network is off), `licensed` (not asserted), and `running`
+(false). This revision does not claim a Massive plan, a native Windows run,
+or a Monday session.
 
 ## Reports
 

@@ -1,7 +1,8 @@
 """Offline simulation for one approved opening-range scope.
 
-This package does not import the day-trader skills, does not place orders,
-and does not read a network. There is no broker pathway and no forward feed.
+Importing this package does not import the day-trader skills, does not place
+orders, and does not read a network. There is no broker pathway and no
+forward feed. The Massive adapter is a separate module and is not loaded here.
 """
 
 from paper_trader.engine import run_bars, size_batch, size_one
