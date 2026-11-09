@@ -239,9 +239,51 @@ def ny_wall_from_unix_ms(unix_ms):
     return local.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def bar_hash(symbol, start_ms, open_, high, low, close):
-    text = "|".join([symbol, str(start_ms), open_, high, low, close])
+def bar_hash(symbol, start_ms, open_, high, low, close, volume=""):
+    text = "|".join([symbol, str(start_ms), open_, high, low, close, volume])
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def adjustment_basis(parsed, *, synthetic):
+    """Name the price basis from the response, not from the request flag.
+
+    ``massive_unadjusted`` is used only when the response itself says
+    ``adjusted`` is false. A missing field stays ``unverified``. A synthetic
+    fixture is never described as a provider adjustment.
+    """
+    if synthetic:
+        return "synthetic"
+    if not isinstance(parsed, dict):
+        raise FeedRejected("adjustment basis has no page")
+    field = parsed.get("adjusted_field")
+    if field == "false":
+        return "massive_unadjusted"
+    if field == "absent":
+        return "unverified"
+    raise FeedRejected("adjustment basis is not recognized")
+
+
+def acquisition_stamp():
+    """Wall time of this call. Not a bar end and not a replay clock.
+
+    Offline replay does not call this. The static check allows ``now`` only
+    in this function. Resolution is one second because bar stamps are whole
+    seconds. The returned value is America/New_York wall time.
+    """
+    utc = datetime.datetime.now(datetime.timezone.utc)
+    epoch = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+    whole = int((utc - epoch).total_seconds())
+    return ny_wall_from_unix_ms(whole * 1000)
+
+
+def _volume(row):
+    """Keep provider ``v`` when it is present. Absence is not a zero."""
+    if "v" not in row or row.get("v") is None:
+        return None
+    value = row.get("v")
+    if not isinstance(value, str) or re.fullmatch(r"[0-9]+", value) is None:
+        raise FeedRejected("provider volume is not a whole-share string")
+    return value
 
 
 def _price(row, key):
@@ -251,19 +293,32 @@ def _price(row, key):
     return value
 
 
-def translate_results(results, *, symbol, mode, source, ingested_at=None):
+def translate_results(results, *, symbol, mode, source, ingested_at=None,
+                      adjustment_basis="synthetic", clock_source="supplied"):
     """Turn one results list into engine bars or rejection records.
 
     ``recorded_batch_replay`` sets ``observed_at`` to the bar end. That is a
-    completed-tape assumption, not a live fill and not an executable past
-    price. ``as_observed`` requires ``ingested_at`` and uses it for every
-    bar. A missing next bar is not created.
+    completed-tape assumption, not a live fill and not an acquisition clock.
+    ``as_observed`` uses a supplied stamp and labels it as not an acquisition
+    clock. ``fresh_forward`` requires ``clock_source="acquisition"`` and uses
+    that stamp for every bar. It never substitutes the bar end. Provider
+    ``v`` is kept as ``provider_volume``. The engine has no volume filter, so
+    this is not stored under the engine key ``volume``.
     """
-    if mode not in ("recorded_batch_replay", "as_observed"):
+    if mode not in ("recorded_batch_replay", "as_observed", "fresh_forward"):
         raise FeedRejected("replay mode is not recognized")
-    if source not in ("synthetic", "massive_unadjusted"):
+    if source not in ("synthetic", "historical"):
         raise FeedRejected("bar source is not recognized")
-    if mode == "as_observed" and not isinstance(ingested_at, str):
+    if adjustment_basis not in ("synthetic", "massive_unadjusted", "unverified"):
+        raise FeedRejected("adjustment basis is not recognized")
+    if adjustment_basis == "massive_unadjusted" and source == "synthetic":
+        raise FeedRejected("a synthetic tape cannot claim provider adjustment")
+    if mode == "fresh_forward":
+        if clock_source != "acquisition" or not isinstance(ingested_at, str):
+            raise FeedRejected("fresh forward requires the acquisition clock")
+    elif clock_source == "acquisition":
+        raise FeedRejected("the acquisition clock is only for fresh forward")
+    elif mode == "as_observed" and not isinstance(ingested_at, str):
         raise FeedRejected("ingested_at is required")
     if not isinstance(results, list):
         raise FeedRejected("results was not a list")
@@ -282,11 +337,12 @@ def translate_results(results, *, symbol, mode, source, ingested_at=None):
             high = _price(row, "h")
             low = _price(row, "l")
             close = _price(row, "c")
+            volume = _volume(row)
         except FeedRejected as exc:
             rejections.append({"symbol": symbol, "reason": str(exc)})
             continue
         ms = int(start_ms)
-        digest = bar_hash(symbol, ms, open_, high, low, close)
+        digest = bar_hash(symbol, ms, open_, high, low, close, volume or "")
         if last_ms is not None and ms < last_ms:
             rejections.append({"symbol": symbol, "reason": "time_went_backwards"})
             continue
@@ -304,13 +360,17 @@ def translate_results(results, *, symbol, mode, source, ingested_at=None):
             continue
         seen[ms] = digest
         end = _add_minutes(wall, 5)
-        if mode == "recorded_batch_replay":
+        if mode == "fresh_forward":
+            observed = ingested_at
+            assumption = "acquisition_clock"
+        elif mode == "recorded_batch_replay":
             observed = end
             assumption = "bar_end_for_recorded_replay_not_a_live_fill"
         else:
             observed = ingested_at
-            assumption = "ingested_at"
-        bars.append({
+            assumption = "supplied_stamp_not_an_acquisition_clock"
+        item = {
+            "adjustment_basis": adjustment_basis,
             "close": close,
             "high": high,
             "low": low,
@@ -320,7 +380,10 @@ def translate_results(results, *, symbol, mode, source, ingested_at=None):
             "start": wall,
             "symbol": symbol,
             "_assumption": assumption,
-        })
+        }
+        if volume is not None:
+            item["provider_volume"] = volume
+        bars.append(item)
     public = []
     for bar in bars:
         item = dict(bar)
@@ -353,12 +416,29 @@ class CallBudget(object):
 
 
 def collect_pages(first_url, transport, budget):
-    """Follow same-host next_url until the page budget stops the walk."""
-    url = first_url
+    """Follow same-host pages. Validate every URL before the transport.
+
+    A bad or repeated ``next_url``, or a spent budget, keeps the pages
+    already accepted and reports the stop. It does not drop those pages and
+    it does not mark the walk complete. The first URL is validated before
+    any transport, including an injected one. An invalid first URL raises
+    because there is no page to keep.
+    """
+    url = validate_next_url(first_url)
     pages = []
+    seen = set()
+    stop = None
     while url:
-        budget.page()
-        budget.call()
+        if url in seen:
+            stop = "duplicate_page"
+            break
+        seen.add(url)
+        try:
+            budget.page()
+            budget.call()
+        except FeedRejected:
+            stop = "budget"
+            break
         body = transport(url)
         if not isinstance(body, str):
             raise FeedRejected("transport did not return text")
@@ -367,8 +447,14 @@ def collect_pages(first_url, transport, budget):
         nxt = parsed.get("next_url")
         if not nxt:
             break
-        url = validate_next_url(nxt)
-    return pages
+        try:
+            url = validate_next_url(nxt)
+        except FeedRejected:
+            stop = "next_url_rejected"
+            break
+    if not pages and stop:
+        raise FeedRejected(stop)
+    return {"complete": stop is None, "pages": pages, "stop": stop}
 
 
 def resolve_api_key(explicit):
@@ -441,10 +527,26 @@ def fetch_aggregates(ticker, start, end, timeout_seconds, runtime_approval,
     if runtime_approval != RUNTIME_APPROVAL:
         raise FeedRejected("live Massive fetch is not approved")
     assert_timeout(timeout_seconds)
-    url = build_request_url(ticker, start, end)
+    url = validate_next_url(build_request_url(ticker, start, end))
     if transport is not None:
         body = transport(url)
         if not isinstance(body, str):
             raise FeedRejected("transport did not return text")
         return body
     return https_get(url, api_key, timeout_seconds)
+
+
+def read_url(url, api_key, timeout_seconds, transport=None):
+    """Validate, then either use an injected transport or ``https_get``.
+
+    ``fetch_aggregates`` also calls ``https_get`` for a single aggregates
+    request. This function is the pagination reader. The URL check runs
+    before either path, including an injected transport.
+    """
+    checked = validate_next_url(url)
+    if transport is not None:
+        body = transport(checked)
+        if not isinstance(body, str):
+            raise FeedRejected("transport did not return text")
+        return body
+    return https_get(checked, api_key, timeout_seconds)

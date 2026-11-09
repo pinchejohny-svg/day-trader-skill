@@ -15,7 +15,7 @@ sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import paper_trader.tests.support as support
-from paper_trader.controller import SESSION_ASSERTION, plan_resume, run_recorded
+from paper_trader.controller import plan_resume, run_recorded
 from paper_trader.massive import (
     FULL_MARKET_UNIVERSE,
     CallBudget,
@@ -44,7 +44,8 @@ def _run(name, **kwargs):
     settings = {
         "symbols": ["SYN"],
         "session_dates": ["2026-11-02"],
-        "session_assertion": SESSION_ASSERTION,
+        "session_kind": "regular",
+        "early_close": "none",
     }
     settings.update(kwargs)
     return run_recorded({"SYN": [_body(name)]}, **settings)
@@ -67,7 +68,10 @@ class MassiveOffline(unittest.TestCase):
         self.assertEqual(view["broker"], "absent")
         self.assertEqual(view["network"], "not_called")
         self.assertFalse(view["running"])
-        self.assertEqual(view["full_market_universe"], FULL_MARKET_UNIVERSE)
+        self.assertFalse(view["full_market_universe"])
+        self.assertEqual(view["full_market_contract"], FULL_MARKET_UNIVERSE)
+        self.assertFalse(view["volume_filter"])
+        self.assertEqual(view["automated_selection"], "existing_engine_rank_within_predeclared_symbols")
         self.assertEqual(view["request"]["adjusted"], "false")
         self.assertEqual(view["adjustment"]["SYN"]["response_adjusted_field"], "absent")
         self.assertNotIn("results", view)
@@ -108,8 +112,10 @@ class MassiveOffline(unittest.TestCase):
 
     def test_off_host_page_is_not_followed_or_echoed(self):
         view = _run("synthetic_aggregates_off_host_page.json")
-        self.assertTrue(any(item["reason"] == "pagination_not_followed_offline" for item in view["rejections"]))
-        self.assertEqual(view["scan"]["bars_submitted"], 0)
+        self.assertTrue(any(item["reason"] == "next_url_rejected" for item in view["rejections"]))
+        self.assertEqual(view["scan"]["bars_submitted"], 1)
+        self.assertFalse(view["dataset_complete"])
+        self.assertNotIn("entry", [item["type"] for item in view["selection"]])
         self.assertNotIn("evil.example", json.dumps(view))
 
     def test_weekend_and_unasserted_weekday_fail_closed(self):
@@ -118,20 +124,23 @@ class MassiveOffline(unittest.TestCase):
                 {"SYN": [_body("synthetic_aggregates_empty.json")]},
                 symbols=["SYN"],
                 session_dates=["2026-11-08"],
-                session_assertion=SESSION_ASSERTION,
+                session_kind="regular",
+                early_close="none",
             )
         with self.assertRaises(FeedRejected):
             run_recorded(
                 {"SYN": [_body("synthetic_aggregates_empty.json")]},
                 symbols=["SYN"],
                 session_dates=["2026-11-09"],
-                session_assertion="",
+                session_kind="unknown",
+                early_close="unknown",
             )
 
     def test_session_flags_do_not_claim_a_calendar(self):
         view = _run("synthetic_aggregates_empty.json", session_dates=["2026-11-09"])
-        self.assertEqual(view["session"]["holiday_calendar"], "not_implemented")
-        self.assertIn("not_detected", view["session"]["early_close"])
+        self.assertEqual(view["session"]["holiday_calendar"], "not_a_full_calendar")
+        self.assertEqual(view["session"]["status"], "proceed")
+        self.assertIn("not_a_calendar", view["session"]["early_close"])
 
     def test_bar_start_and_close_use_new_york_wall_time(self):
         self.assertEqual(ny_wall_from_unix_ms(1793629800000), "2026-11-02T09:30:00")
@@ -182,7 +191,8 @@ class MassiveOffline(unittest.TestCase):
             {"SYN": [body]},
             symbols=["SYN"],
             session_dates=["2026-11-02"],
-            session_assertion=SESSION_ASSERTION,
+            session_kind="regular",
+            early_close="none",
         )
         self.assertNotIn("entry", [item["type"] for item in view["selection"]])
         self.assertTrue(any(item["reason"] == "off_grid" for item in view["warnings"]))
@@ -202,7 +212,10 @@ class MassiveOffline(unittest.TestCase):
 
         got = collect_pages(first, transport, CallBudget())
         self.assertEqual(seen, [first, second])
-        self.assertEqual(len(got), 2)
+        self.assertTrue(got["complete"])
+        self.assertEqual(len(got["pages"]), 2)
+        with self.assertRaises(FeedRejected):
+            collect_pages("https://evil.example/first", lambda _url: self.fail("transport called"), CallBudget())
         with self.assertRaises(FeedRejected):
             validate_next_url("https://evil.example/next")
         with self.assertRaises(FeedRejected) as userinfo:
@@ -218,11 +231,15 @@ class MassiveOffline(unittest.TestCase):
             calls.append(url)
             return json.dumps({"results": [], "next_url": "https://evil.example/next"})
 
-        with self.assertRaises(FeedRejected):
-            collect_pages(first, boom, CallBudget())
+        kept = collect_pages(first, boom, CallBudget())
         self.assertEqual(calls, [first])
-        with self.assertRaises(FeedRejected):
-            collect_pages(first, transport, CallBudget(max_calls=1, max_pages=2))
+        self.assertFalse(kept["complete"])
+        self.assertEqual(kept["stop"], "next_url_rejected")
+        self.assertEqual(len(kept["pages"]), 1)
+        stopped = collect_pages(first, transport, CallBudget(max_calls=1, max_pages=2))
+        self.assertFalse(stopped["complete"])
+        self.assertEqual(stopped["stop"], "budget")
+        self.assertEqual(len(stopped["pages"]), 1)
 
     def test_request_url_and_errors_do_not_carry_a_secret(self):
         url = build_request_url("SYN", "2026-11-02", "2026-11-02")
@@ -283,6 +300,60 @@ class MassiveOffline(unittest.TestCase):
     def test_split_adjusted_page_is_refused(self):
         with self.assertRaises(FeedRejected):
             parse_response('{"adjusted": true, "results": []}')
+
+    def test_volume_is_kept_and_not_described_as_an_engine_filter(self):
+        parsed = parse_response(_body("synthetic_aggregates_round_trip.json"))
+        bars, _rejected, _notes = translate_results(
+            parsed["results"][:1],
+            symbol="SYN",
+            mode="recorded_batch_replay",
+            source="synthetic",
+        )
+        self.assertEqual(bars[0]["provider_volume"], "1")
+        self.assertNotIn("volume", bars[0])
+        view = _run("synthetic_aggregates_round_trip.json")
+        self.assertFalse(view["volume_filter"])
+
+    def test_missing_adjustment_field_stays_unverified(self):
+        from paper_trader.massive import adjustment_basis
+        absent = parse_response('{"results": []}')
+        present = parse_response('{"adjusted": false, "results": []}')
+        self.assertEqual(adjustment_basis(absent, synthetic=False), "unverified")
+        self.assertEqual(adjustment_basis(present, synthetic=False), "massive_unadjusted")
+        self.assertEqual(adjustment_basis(absent, synthetic=True), "synthetic")
+        bars, _rejected, _notes = translate_results(
+            [{"t": "1793629800000", "o": "100.00", "h": "102.00", "l": "99.00", "c": "101.00"}],
+            symbol="SYN",
+            mode="fresh_forward",
+            source="historical",
+            ingested_at="2026-11-02T10:05:00",
+            adjustment_basis="unverified",
+            clock_source="acquisition",
+        )
+        self.assertEqual(bars[0]["observed_at"], "2026-11-02T10:05:00")
+        self.assertNotEqual(bars[0]["observed_at"], "2026-11-02T09:35:00")
+        self.assertEqual(bars[0]["adjustment_basis"], "unverified")
+        with self.assertRaises(FeedRejected):
+            translate_results(
+                [{"t": "1793629800000", "o": "100.00", "h": "102.00", "l": "99.00", "c": "101.00"}],
+                symbol="SYN",
+                mode="fresh_forward",
+                source="historical",
+                adjustment_basis="unverified",
+                clock_source="supplied",
+            )
+
+    def test_symbol_budget_is_enforced_before_pages(self):
+        symbols = ["S%02d" % index for index in range(21)]
+        with self.assertRaises(FeedRejected) as caught:
+            run_recorded(
+                {"S00": object()},
+                symbols=symbols,
+                session_dates=["2026-11-02"],
+                session_kind="regular",
+                early_close="none",
+            )
+        self.assertEqual(str(caught.exception), "symbol budget exhausted")
 
     def test_source_has_no_order_path_and_import_does_not_load_the_client(self):
         package = support.PACKAGE

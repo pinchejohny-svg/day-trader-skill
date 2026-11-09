@@ -9,7 +9,7 @@ sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 import paper_trader.tests.support as support
-from paper_trader.forward import BLOCKER, FORWARD_IMPLEMENTED
+from paper_trader.forward import BLOCKER, FORWARD_IMPLEMENTED, FORWARD_RUNNING, ORCHESTRATION
 
 _BANNED_MODULES = {
     "alpaca",
@@ -63,7 +63,12 @@ class StaticBoundaries(unittest.TestCase):
                 in_tests = os.sep + "tests" + os.sep in path
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Attribute) and node.attr in ("now", "urlopen", "urlretrieve"):
-                        self.fail("%s calls .%s" % (path, node.attr))
+                        if not (
+                            node.attr == "now"
+                            and base == "massive.py"
+                            and _enclosing_function(tree, node) == "acquisition_stamp"
+                        ):
+                            self.fail("%s calls .%s" % (path, node.attr))
                     if isinstance(node, ast.Name) and node.id in ("urlopen", "sleep", "eval", "exec"):
                         self.fail("%s references %s" % (path, node.id))
                     if (
@@ -108,16 +113,48 @@ class StaticBoundaries(unittest.TestCase):
         for node in tree.body:
             self.assertFalse(set(_imported_roots(node)) & {"urllib", "socket"}, path)
 
-    def test_forward_module_has_no_callable_feed(self):
+    def test_forward_orchestration_is_wired_and_not_running(self):
         self.assertFalse(FORWARD_IMPLEMENTED)
+        self.assertFalse(FORWARD_RUNNING)
+        self.assertEqual(ORCHESTRATION, "wired_inert")
         self.assertIn("no broker pathway", BLOCKER)
-        with open(os.path.join(support.PACKAGE, "forward.py"), "r", encoding="utf-8") as handle:
+        path = os.path.join(support.PACKAGE, "forward.py")
+        with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
         tree = ast.parse(source)
-        self.assertFalse(any(isinstance(node, (ast.FunctionDef, ast.ClassDef)) for node in ast.walk(tree)))
+        self.assertTrue(any(isinstance(node, ast.FunctionDef) for node in tree.body))
+        self.assertNotIn("https_get", source)
+        self.assertNotIn("alpaca", source.lower())
+        self.assertNotIn("subprocess", source)
+        massive = os.path.join(support.PACKAGE, "massive.py")
+        with open(massive, "r", encoding="utf-8") as handle:
+            massive_source = handle.read()
+        massive_tree = ast.parse(massive_source)
+        fetch = _function(massive_tree, "fetch_aggregates")
+        reader = _function(massive_tree, "read_url")
+        pages = _function(massive_tree, "collect_pages")
+        self.assertIn("https_get", _called_names(fetch))
+        self.assertIn("https_get", _called_names(reader))
+        self.assertEqual(_called_names(pages)[0], "validate_next_url")
 
     def test_bytecode_flag_is_on(self):
         self.assertTrue(sys_dont_write())
+
+
+def _function(tree, name):
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(name)
+
+
+def _called_names(fn):
+    names = []
+    for node in fn.body:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+                names.append(child.func.id)
+    return names
 
 
 def _imported_roots(node):

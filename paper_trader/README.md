@@ -6,10 +6,10 @@ market result, a broker fill, or evidence that the rule makes money.
 
 Importing this package does not download data, open a socket, spawn a
 process, read a credential, or import the day-trader skills. There is no
-broker object and no paper-trading flag. `forward.py` has no callable feed.
-`massive.py` contains one inert HTTPS helper that nothing calls unless a
-later run passes an explicit approval phrase and turns the network flag on.
-A key in the environment does not do that. State files can be written only
+broker object and no paper-trading flag. `forward.py` is the dry
+orchestrator. `fetch_aggregates` calls the live reader only after an
+explicit acquire flag, a network flag, and the approval phrase. A key in
+the environment does not fetch by itself. State files can be written only
 under `paper_trader/demo-state`. A `..` path or a symlink is refused.
 `--new` does not overwrite. A missing or stale bar pauses the fill and
 leaves an open position unresolved; it does not book an exit.
@@ -204,61 +204,98 @@ python -B -m paper_trader --new --fixture paper_trader/fixtures/synthetic_round_
 ```
 
 The Linux result for `c9f23cc30bec4cbbb957caaa551d354f38dcde79` does not
-cover this Windows code. `forward.py` is still only the unimplemented marker.
+cover this Windows code. `forward.py` is wired and inert. It is not a
+running feed. `FORWARD_IMPLEMENTED` stays false so a held runtime is not
+reported as a finished live trader.
 
 ## Massive adapter
 
-`massive.py` and `controller.py` are an inert reader and a local replay
-helper. They do not change fill prices, stops, targets, or cash. The engine
-still fills the next bar's open, with the same slippage and fees.
+`massive.py`, `controller.py`, and `forward.py` connect a read-only
+aggregates client to the existing engine and `StateStore`. They do not
+change fill prices, stops, targets, or cash. The engine still fills the
+next bar's open. That fill time is the engine's bar model, not a live print
+of a past open and not the acquisition clock.
 
 The verified request is `GET https://api.massive.com/v2/aggs/ticker/{ticker}/range/5/minute/{from}/{to}`
-with `adjusted=false`, `sort=asc`, and `limit=5000`. The verified results
-contract does not echo that flag. If a page contains `adjusted: true` it is
-refused. If the field is absent, the view records the absence and does not
-treat that as proof the prices are unadjusted. The bearer token, when
-a later approved call supplies one, is a header. It is not a query parameter
-and it is not written into an error. Redirects, any other host, and a
-`next_url` with userinfo or an `apiKey` query are refused. `https_get` is
-not called by import, by the controller, or by the tests.
+with `adjusted=false`, `sort=asc`, and `limit=5000`. `fetch_aggregates`
+calls the live reader when no transport is injected. Every URL, including
+the first and any injected transport, is checked before the call. The bearer
+token would be a header. It is not a query parameter and it is not written
+into an error. Redirects, any other host, userinfo, and an `apiKey` query
+are refused. There is no retry and no sleep.
 
 `results[].t` is the Unix-millisecond start of the bar. No `results` entry
-means no bar. A second row with the same start and different prices is
-hashed and ignored. The first row stays. Nothing rewrites a fill already
-produced from the stored prefix.
+means no bar. Provider `v` is stored on the bar as `provider_volume`. The
+engine does not rank or filter on volume, and this package does not claim
+that it does. A second row with the same start and different prices or
+volume is hashed and not applied. The stored row remains the one resumed
+later.
 
-Two replay modes exist, and neither is a live order:
+`massive_unadjusted` is used only when the response field `adjusted` is
+false. A missing field stays `unverified`. The request flag is not treated
+as that proof. A synthetic fixture stays `synthetic`.
 
-- `recorded_batch_replay` sets `observed_at` to the bar end. That is a
-  completed-tape assumption. It is not an executable past price and it is
-  not fresh-forward.
-- `as_observed` uses a caller-supplied `ingested_at`. A late or unclosed
-  observation takes the existing stale path. This package does not read the
-  system clock.
+Clocks:
 
-The controller does not write a ledger. An existing state file is not opened
-and is not reset. A restart replays the stored bars and may append only a
-strictly later suffix, which is the rule `StateStore.resume` already uses.
-There is no streaming cursor. A duplicate bar is dropped. A correction of a
-stored bar is not applied.
+- `historical_replay` sets `observed_at` to the bar end. That is a completed
+  tape, not an acquisition and not an executable past price.
+- `fresh_forward` sets `observed_at` and the ingestion time from the
+  acquisition clock. It never substitutes the bar end. A late or unclosed
+  observation takes the existing stale path. No fill is queued when the next
+  eligible bar is absent.
 
-The symbol list is the caller's predeclared list, at most 20 names. The
-all-tickers and full-market snapshot field lists were not in the verified
-aggregates contract, so `full_market_universe` stays
-`not_implemented_contract_unverified`. No scan of the whole market is claimed.
+Pagination keeps the current page. A later page is followed only when its
+URL passes the host check, the page budget still has room, and the URL was
+not already seen. If the walk stops, the pages already accepted are kept and
+`dataset_complete` is false. A partial walk is not described as a complete
+tape.
 
-Saturday and Sunday are refused. Any other date is refused unless the caller
-passes `human_asserts_regular_nyse_session`. That sentence is not an NYSE
-calendar. Holiday and early-close handling are still not implemented. The
-engine's incomplete flags are copied into the view and are never forced true
-for a full session. No entry is created when there is no signal, no next
-bar, or a gap.
+The operational path writes through `StateStore.create` only when the file
+is absent and the caller asked to create it. An existing file is
+`StateStore.resume`: the stored prefix plus a strictly later suffix. The
+file is not reset. A duplicate is dropped. A correction of a stored bar is
+not applied. This is still a batch replay of that prefix, not a streaming
+cursor and not a live execution.
+
+The symbol list is the caller's predeclared list. More than 20 names fails
+before any page is parsed and before any request. Selection is the existing
+engine rank inside that list. `full_market_universe` is false. The
+all-tickers and snapshot contracts were not verified, so that gap remains.
+No scan of the whole market is claimed.
+
+Saturday and Sunday produce a waiting report and no ledger write. Any other
+date is refused unless this run's configuration says `regular` and
+`early_close` is `none`. That pair is a preapproved bounded session, not a
+holiday calendar and not a per-trade confirmation. Unknown sessions fail
+closed. The engine's incomplete flags are copied through and are never
+forced to a full session.
 
 Raw provider bodies are not stored. Checked-in pages are synthetic fixtures
-under `fixtures/massive/`. Status in the view separates `ready` (source is
-present and the network is off), `licensed` (not asserted), and `running`
-(false). This revision does not claim a Massive plan, a native Windows run,
-or a Monday session.
+under `fixtures/massive/`. The default command is dry: a key does not fetch.
+`ready` means the source is wired and the network is off. `licensed` is not
+asserted. `running` is false. This revision does not claim a Massive plan, a
+native Windows run, or a completed Monday session.
+
+The proposed forward command, not run from this revision:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m paper_trader forward --help
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m paper_trader forward \
+  --new \
+  --state forward-round.json \
+  --symbols SYN \
+  --sessions 2026-11-02 \
+  --session-kind regular \
+  --early-close none \
+  --mode historical_replay \
+  --page SYN=paper_trader/fixtures/massive/synthetic_aggregates_round_trip.json \
+  --approve orb15-5m-long-next-open-v1 \
+  --acknowledge-simulated
+```
+
+A later bounded read, still not authorized, would add `--acquire --network
+--approve-fetch massive_readonly_fetch_approved --timeout 5` and
+`--mode fresh_forward`. Omit those flags and the process cannot fetch.
 
 ## Reports
 
@@ -305,5 +342,5 @@ under `paper_trader/demo-state`. Do not point discovery at the repository
 `tests/` directory; that runs the skill suite. The suite does not spawn a
 process.
 
-These commands were not executed while this package was written. No syntax
-check, import, formatter, or unit test was run. `TESTS NOT RUN`.
+These commands were not executed while this package was written. No import,
+formatter, or unit test was run. `TESTS NOT RUN`.
