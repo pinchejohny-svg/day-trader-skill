@@ -348,7 +348,7 @@ class ForwardIntegration(unittest.TestCase):
         self.assertEqual(first["requests"], 7)
         self.assertEqual(waits, [60, 60, 60, 60, 60, 60])
         self.assertEqual(first["cash"], "10096.200")
-        self.assertEqual(first["invocation"], "finite_session")
+        self.assertEqual(first["invocation"], "finite_wall_clock_session")
         self.assertEqual(first["network"], "injected_not_a_provider_read")
         self.assertFalse(first["running"])
         self.assertEqual(first["orders"], [])
